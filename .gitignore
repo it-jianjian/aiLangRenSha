@@ -1,0 +1,31 @@
+# AI 狼人杀 — 项目级 .gitignore
+
+# ─── 后端 ───
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.env
+.venv/
+venv/
+data/
+*.db
+*.db-journal
+.pytest_cache/
+
+# ─── 前端 ───
+node_modules/
+frontend/dist/
+frontend/.env.local
+*.tsbuildinfo
+
+# ─── IDE ───
+.idea/
+.vscode/
+*.swp
+
+# ─── OS ───
+.DS_Store
+Thumbs.db

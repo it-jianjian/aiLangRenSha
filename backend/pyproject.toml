@@ -1,0 +1,34 @@
+# ============================================================
+# AI 狼人杀 — Python 项目配置（pyproject.toml）
+# 这是 Python 项目的标准配置文件，定义了构建系统、项目元数据、工具配置
+# ============================================================
+
+# ─── 构建系统 ──────────────────────────────────────────────
+# 告诉 pip 用什么工具来打包这个项目
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]       # 构建工具：setuptools + wheel
+build-backend = "setuptools.build_meta"         # 构建后端入口
+
+# ─── 项目元数据 ────────────────────────────────────────────
+[project]
+name = "ai-werewolf"                            # 包名（pip install ai-werewolf）
+version = "0.1.0"                               # 版本号，遵循语义化版本
+description = "AI Werewolf Game - Multi-Agent Werewolf Game Platform"
+readme = "README.md"                            # 包描述文件
+requires-python = ">=3.11"                      # 最低 Python 版本要求
+dependencies = []                               # 运行时依赖（实际用 requirements.txt 管理）
+
+# ─── pytest 测试配置 ───────────────────────────────────────
+# 让 pytest 知道怎么运行测试
+[tool.pytest.ini_options]
+asyncio_mode = "auto"                           # 自动识别 async 测试函数，无需手动标记 @pytest.mark.asyncio
+testpaths = ["tests"]                           # 测试文件目录
+
+# ─── ruff 代码规范 ─────────────────────────────────────────
+# ruff 是超快的 Python linter，替代 flake8 + isort + black
+[tool.ruff]
+line-length = 120                               # 每行最大字符数（比默认 88 宽一些，适合长字符串）
+target-version = "py311"                        # 目标 Python 版本，影响语法检查
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]                   # 启用的检查规则：E=错误, F=pyflakes, W=警告, I=import排序

@@ -1,0 +1,81 @@
+# ============================================================
+# AI 狼人杀 — Python 依赖清单
+# 安装方式: pip install -r requirements.txt
+# 所有依赖采用版本范围约束（>=最低, <下一大版本），防止不兼容升级
+# ============================================================
+
+# ─── 核心 Web 框架 ───────────────────────────────────────────
+# fastapi: 现代异步 Web 框架，自动生成 OpenAPI 文档，支持 WebSocket
+fastapi>=0.110.0,<1.0.0
+# uvicorn: ASGI 服务器，[standard] 包含 uvloop 等性能优化扩展
+uvicorn[standard]>=0.29.0,<1.0.0
+# pydantic: 数据验证库，FastAPI 用它做请求/响应序列化与校验
+pydantic>=2.6.0,<3.0.0
+# pydantic-settings: pydantic 扩展，支持从 .env 文件和环境变量加载配置
+pydantic-settings>=2.2.0,<3.0.0
+
+# ─── AI / LLM 框架（技术方案核心） ──────────────────────────
+# langchain: LLM 应用开发框架，提供 PromptTemplate、OutputParser 等抽象
+langchain>=0.3.0,<1.0.0
+# langchain-core: LangChain 核心模块，包含 BaseMessage、BaseChatModel 等基类
+langchain-core>=0.3.0,<1.0.0
+# langchain-openai: LangChain 的 OpenAI 集成，通过 ChatOpenAI 调用 OpenAI-compatible API
+# （国产模型如 Qwen/ChatGLM 都兼容 OpenAI 协议，统一用此适配器）
+langchain-openai>=0.2.0,<1.0.0
+# langchain-community: 社区集成包，包含 ChatTongyi（通义千问）等其他模型适配器
+langchain-community>=0.3.0,<1.0.0
+# langgraph: 有状态图执行引擎，用于编排游戏主流程和 Agent 推理链
+# 提供 StateGraph（状态图）、Checkpointer（状态持久化）、interrupt（人类中断点）
+langgraph>=0.2.0,<1.0.0
+
+# ─── 数据库 ─────────────────────────────────────────────────
+# sqlalchemy: Python 最成熟的 ORM，2.0 版本支持 async 异步查询
+sqlalchemy>=2.0.0,<3.0.0
+# alembic: SQLAlchemy 配套的数据库迁移工具（当前用自动建表，后续复杂表变更时用）
+alembic>=1.13.0,<2.0.0
+# aiosqlite: SQLAlchemy async 模式的 SQLite 异步驱动，让 SQLite 支持异步读写
+aiosqlite>=0.20.0,<1.0.0
+
+# ─── WebSocket ─────────────────────────────────────────────
+# websockets: Python WebSocket 库，FastAPI 内部用它处理 WS 连接
+websockets>=12.0,<14.0
+
+# ─── 工具库 ─────────────────────────────────────────────────
+# python-dotenv: 从 .env 文件加载环境变量，pydantic-settings 内部依赖
+python-dotenv>=1.0.0,<2.0.0
+
+# ─── 测试框架 ───────────────────────────────────────────────
+# pytest: Python 标准测试框架
+pytest>=8.0.0,<9.0.0
+# pytest-asyncio: pytest 的 async 测试支持插件，asyncio_mode="auto" 自动检测异步测试
+pytest-asyncio>=0.23.0,<1.0.0
+# httpx: 异步 HTTP 客户端，pytest 中用 AsyncClient 测试 FastAPI 接口
+httpx>=0.27.0,<1.0.0
+# === Core ===
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.29.0,<1.0.0
+pydantic>=2.6.0,<3.0.0
+pydantic-settings>=2.2.0,<3.0.0
+
+# === AI / LLM ===
+langchain>=0.3.0,<1.0.0
+langchain-core>=0.3.0,<1.0.0
+langchain-openai>=0.2.0,<1.0.0
+langchain-community>=0.3.0,<1.0.0
+langgraph>=0.2.0,<1.0.0
+
+# === Database ===
+sqlalchemy>=2.0.0,<3.0.0
+alembic>=1.13.0,<2.0.0
+aiosqlite>=0.20.0,<1.0.0
+
+# === WebSocket ===
+websockets>=12.0,<14.0
+
+# === Utils ===
+python-dotenv>=1.0.0,<2.0.0
+
+# === Testing ===
+pytest>=8.0.0,<9.0.0
+pytest-asyncio>=0.23.0,<1.0.0
+httpx>=0.27.0,<1.0.0
