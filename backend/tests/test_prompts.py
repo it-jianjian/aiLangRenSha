@@ -39,6 +39,16 @@ class TestRoleStrategy:
         strategy = get_role_strategy("seer")
         assert "查验" in strategy or "身份" in strategy
 
+    def test_seer_strategy_warns_against_early_reveal(self):
+        """预言家策略应明确警告第一天不要跳身份"""
+        strategy = get_role_strategy("seer")
+        assert "第一天" in strategy or "第一晚" in strategy or "不要跳" in strategy
+
+    def test_seer_strategy_emphasizes_survival(self):
+        """预言家策略应强调存活的重要性（被击杀风险）"""
+        strategy = get_role_strategy("seer")
+        assert "击杀" in strategy or "存活" in strategy or "活着" in strategy
+
     def test_witch_strategy_mentions_potion(self):
         """女巫策略应提到解药/毒药"""
         strategy = get_role_strategy("witch")
@@ -72,6 +82,11 @@ class TestDecisionInstruction:
         instruction = get_decision_instruction("speech")
         assert "发言" in instruction or "文本" in instruction or "文字" in instruction
 
+    def test_speech_instruction_discourages_echoing(self):
+        """发言指令应要求独立思考，不简单复述他人"""
+        instruction = get_decision_instruction("speech")
+        assert "复述" in instruction or "独立" in instruction
+
 
 class TestBuildAgentPrompt:
     """测试完整 Prompt 构建"""
@@ -94,6 +109,20 @@ class TestBuildAgentPrompt:
             game_context={"current_round": 2},
         )
         assert any(isinstance(m, SystemMessage) for m in messages)
+
+    def test_system_message_contains_core_rules(self):
+        """SystemMessage 应包含核心行为规则"""
+        messages = build_agent_prompt(
+            role="villager", seat_number=3, action_type="speech",
+            game_context={"current_round": 1},
+        )
+        sys_msg = next(m for m in messages if isinstance(m, SystemMessage))
+        content = sys_msg.content
+        assert "阵营获胜" in content
+        assert "系统事实" in content
+        assert "不得虚构" in content
+        assert "复述" in content
+        assert "JSON" in content
 
     def test_build_prompt_contains_human_message(self):
         """构建的 Prompt 应包含 HumanMessage（含策略+上下文+指令）"""

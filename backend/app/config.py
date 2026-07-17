@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # 温度参数: 控制 LLM 输出随机性，0.1=最确定, 2.0=最随机，0.7 适合对话场景
     llm_temperature: float = 0.7
     # 超时时间: 单次 LLM 调用最大等待秒数，超时后触发重试或降级
-    llm_timeout: int = 15
+    llm_timeout: int = 60
 
     # ─── CORS 跨域配置 ───────────────────────────────────────
     # 允许哪些前端域名访问后端 API（逗号分隔多个）
@@ -85,58 +85,4 @@ def get_settings() -> Settings:
     @lru_cache 确保整个应用生命周期内只创建一次 Settings 实例
     后续调用直接返回缓存对象，避免重复读取 .env 文件
     """
-    return Settings()
-"""AI 狼人杀 — 全局配置管理
-
-通过 pydantic-settings 从 .env 文件和环境变量加载配置。
-"""
-
-from functools import lru_cache
-from pathlib import Path
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-class Settings(BaseSettings):
-    """应用全局配置"""
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
-    # ── 数据库 ──
-    database_url: str = "sqlite+aiosqlite:///./data/werewolf.db"
-
-    # ── LLM 模型 ──
-    llm_api_key: str = ""
-    llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    llm_model_name: str = "qwen-plus"
-    llm_temperature: float = 0.7
-    llm_timeout: int = 15
-
-    # ── CORS ──
-    cors_origins: str = "http://localhost:3000,http://localhost:5173"
-
-    # ── 服务 ──
-    host: str = "0.0.0.0"
-    port: int = 8000
-
-    @property
-    def cors_origins_list(self) -> list[str]:
-        """将逗号分隔的 CORS 源解析为列表"""
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
-    @property
-    def data_dir(self) -> Path:
-        """数据目录（SQLite 等）"""
-        d = Path("./data")
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-
-@lru_cache
-def get_settings() -> Settings:
-    """获取全局配置单例"""
     return Settings()

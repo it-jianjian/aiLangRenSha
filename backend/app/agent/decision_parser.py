@@ -159,8 +159,8 @@ def validate_decision(
             return False, "发言必须是文本字符串"
         if len(decision.strip()) == 0:
             return False, "发言不能为空"
-        if len(decision) > 500:
-            return False, "发言不能超过500字"
+        if len(decision) > 1000:
+            return False, "发言不能超过1000字"
         return True, ""
 
     # ─── vote: 投票 ───

@@ -200,21 +200,28 @@ def run_agent(state: AgentState) -> dict[str, Any]:
     )
 
     if not valid:
-        logger.warning(f"[Agent] {seat}号 决策不合法({reason})，降级随机")
-        is_fallback = True
-        parsed = _random_decision(action_type, filtered, seat)
-        fallback_valid, fallback_reason = validate_decision(
-            decision=parsed.get("decision"),
-            action_type=action_type,
-            alive_seats=alive_seats,
-            own_seat=seat,
-            werewolf_seats=all_werewolf_seats if action_type == "kill" else None,
-            allowed_target_seats=filtered.get("allowed_target_seats"),
-            can_skip=bool(filtered.get("can_skip", False)),
-        )
-        if not fallback_valid:
-            logger.warning(f"[Agent] {seat}号 fallback 仍不合法({fallback_reason})，强制空决策")
-            parsed = {"decision": None, "reasoning": f"[降级] 无合法目标：{fallback_reason}"}
+        # 发言/遗言超长时截断保留原内容，而非替换为通用废话
+        if action_type in ("speech", "last_words") and isinstance(decision_value, str) and len(decision_value) > 1000:
+            logger.warning(f"[Agent] {seat}号 发言超长({len(decision_value)}字)，截断保留前1000字")
+            decision_value = decision_value[:1000]
+            parsed = {"decision": decision_value, "reasoning": parsed.get("reasoning", "") + " [截断]"}
+            is_fallback = False  # 截断不算降级，内容是 AI 原始输出
+        else:
+            logger.warning(f"[Agent] {seat}号 决策不合法({reason})，降级随机")
+            is_fallback = True
+            parsed = _random_decision(action_type, filtered, seat)
+            fallback_valid, fallback_reason = validate_decision(
+                decision=parsed.get("decision"),
+                action_type=action_type,
+                alive_seats=alive_seats,
+                own_seat=seat,
+                werewolf_seats=all_werewolf_seats if action_type == "kill" else None,
+                allowed_target_seats=filtered.get("allowed_target_seats"),
+                can_skip=bool(filtered.get("can_skip", False)),
+            )
+            if not fallback_valid:
+                logger.warning(f"[Agent] {seat}号 fallback 仍不合法({fallback_reason})，强制空决策")
+                parsed = {"decision": None, "reasoning": f"[降级] 无合法目标：{fallback_reason}"}
 
     latency_ms = int((time.monotonic() - start_time) * 1000)
 

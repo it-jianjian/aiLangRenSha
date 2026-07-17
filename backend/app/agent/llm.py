@@ -65,6 +65,7 @@ def create_llm(
         temperature=temperature if temperature is not None else settings.llm_temperature,
         timeout=settings.llm_timeout,
         max_retries=1,
+        max_tokens=2048,
     )
 
 
