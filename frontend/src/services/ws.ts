@@ -16,25 +16,34 @@ class WebSocketService {
   private handlers: Set<MessageHandler> = new Set()
   private reconnectAttempts = 0
   private maxReconnectAttempts = 5
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private manuallyClosed = false
 
   /** 连接到指定对局的 WebSocket */
-  connect(gameId: string): void {
-    if (this.ws) {
-      this.disconnect()
-    }
+  connect(gameId: string, playerToken?: string): void {
+    this.closeTransport()
+    this.reconnectAttempts = 0
+    this.manuallyClosed = false
+    this.openTransport(gameId, playerToken)
+  }
+
+  private openTransport(gameId: string, playerToken?: string): void {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     const url = `${protocol}//${host}/ws/game/${gameId}`
 
     this.ws = new WebSocket(url)
+    const socket = this.ws
 
-    this.ws.onopen = () => {
-      this.reconnectAttempts = 0
+    socket.onopen = () => {
       console.log('[WS] Connected to game:', gameId)
+      if (playerToken) {
+        this.send({ type: 'authenticate', data: { player_token: playerToken } })
+      }
     }
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
       try {
         const message: WSMessage = JSON.parse(event.data)
         this.handlers.forEach((handler) => handler(message))
@@ -43,28 +52,42 @@ class WebSocketService {
       }
     }
 
-    this.ws.onclose = () => {
-      console.log('[WS] Disconnected')
-      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+    socket.onclose = (event) => {
+      if (this.ws === socket) this.ws = null
+      console.log('[WS] Disconnected:', event.code)
+      const shouldReconnect = !this.manuallyClosed && event.code !== 1000 && event.code !== 1008
+      if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++
-        const delay = 1000 * this.reconnectAttempts
+        const delay = Math.min(1000 * 2 ** (this.reconnectAttempts - 1), 30000)
         console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
-        setTimeout(() => this.connect(gameId), delay)
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null
+          this.openTransport(gameId, playerToken)
+        }, delay)
       }
     }
 
-    this.ws.onerror = (error) => {
+    socket.onerror = (error) => {
       console.error('[WS] Error:', error)
+    }
+  }
+
+  private closeTransport(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.ws) {
+      this.ws.onclose = null
+      this.ws.close(1000, 'client disconnect')
+      this.ws = null
     }
   }
 
   /** 断开连接 */
   disconnect(): void {
-    if (this.ws) {
-      this.ws.onclose = null // 防止自动重连
-      this.ws.close()
-      this.ws = null
-    }
+    this.manuallyClosed = true
+    this.closeTransport()
     this.handlers.clear()
     this.reconnectAttempts = 0
   }

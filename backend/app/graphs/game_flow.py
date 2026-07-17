@@ -35,6 +35,8 @@ from app.graphs.nodes.night_phase import (
     night_werewolf_node,
     night_seer_node,
     night_witch_node,
+    night_guard_node,
+    hunter_revenge_node,
     night_settle_node,
 )
 from app.graphs.nodes.day_phase import (
@@ -58,6 +60,30 @@ from app.graphs.nodes.victory_check import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _send_game_started(game_id: str, initial_state: dict[str, Any]) -> None:
+    """仅向服务端已认证绑定的人类座位投递私密身份信息。"""
+    human_seat = initial_state.get("human_seat")
+    if human_seat is None:
+        return
+    human_player = next(
+        player for player in initial_state["players"] if player["seat_number"] == human_seat
+    )
+    companions = (
+        [seat for seat in initial_state["werewolf_seats"] if seat != human_seat]
+        if human_player["role"] == PlayerRole.WEREWOLF else []
+    )
+    from app.api.ws_handler import ws_manager
+    await ws_manager.send_to_seat(game_id, human_seat, {
+        "type": "game_started",
+        "data": {
+            "seat": human_seat,
+            "role": human_player["role"],
+            "player_name": human_player["player_name"],
+            "werewolf_companions": companions,
+        },
+    })
 
 
 # ================================================================
@@ -84,6 +110,8 @@ def build_game_graph() -> StateGraph:
     graph.add_node("night_werewolf", night_werewolf_node)
     graph.add_node("night_seer", night_seer_node)
     graph.add_node("night_witch", night_witch_node)
+    graph.add_node("night_guard", night_guard_node)
+    graph.add_node("hunter_revenge", hunter_revenge_node)
     graph.add_node("night_settle", night_settle_node)
 
     # 白天阶段
@@ -110,8 +138,9 @@ def build_game_graph() -> StateGraph:
     graph.add_edge("night_start", "night_werewolf")
     graph.add_edge("night_werewolf", "night_seer")
     graph.add_edge("night_seer", "night_witch")
-    graph.add_edge("night_witch", "night_settle")
-    graph.add_edge("night_settle", "victory_check")
+    graph.add_edge("night_witch", "night_guard")
+    graph.add_edge("night_guard", "night_settle")
+    graph.add_edge("night_settle", "hunter_revenge")
 
     # 白天流程链：开始 → 遗言 → 发言 → 投票 → 投票结果
     graph.add_edge("day_start", "day_last_words")
@@ -120,7 +149,7 @@ def build_game_graph() -> StateGraph:
     graph.add_edge("day_vote", "day_vote_result")
 
     # 淘汰 → 白天结束（遗言 + 平安日检测）
-    graph.add_edge("day_eliminate", "day_end")
+    graph.add_edge("day_eliminate", "hunter_revenge")
 
     # 白天结束 → 胜负检查（决定是结束还是进入下一轮）
     graph.add_edge("day_end", "victory_check")
@@ -162,6 +191,12 @@ def build_game_graph() -> StateGraph:
         },
     )
 
+    graph.add_conditional_edges(
+        "hunter_revenge",
+        lambda state: "victory_check" if state.get("post_victory_route") == "after_night" else "day_end",
+        {"victory_check": "victory_check", "day_end": "day_end"},
+    )
+
     return graph
 
 
@@ -199,6 +234,8 @@ async def _load_initial_state(game_id: str) -> dict[str, Any]:
     werewolf_seats = []
     seer_seat = None
     witch_seat = None
+    hunter_seat = None
+    guard_seat = None
     human_seat = None
 
     for p in db_players:
@@ -222,6 +259,10 @@ async def _load_initial_state(game_id: str) -> dict[str, Any]:
             seer_seat = p.seat_number
         elif p.role == PlayerRole.WITCH:
             witch_seat = p.seat_number
+        elif p.role == PlayerRole.HUNTER:
+            hunter_seat = p.seat_number
+        elif p.role == PlayerRole.GUARD:
+            guard_seat = p.seat_number
 
         if p.player_type == PlayerType.HUMAN:
             human_seat = p.seat_number
@@ -246,6 +287,8 @@ async def _load_initial_state(game_id: str) -> dict[str, Any]:
         "werewolf_seats": werewolf_seats,
         "seer_seat": seer_seat,
         "witch_seat": witch_seat,
+        "hunter_seat": hunter_seat,
+        "guard_seat": guard_seat,
         "current_round": 0,       # night_start_node 会将其设为 1
         # 夜晚临时数据（初始为空）
         "night_kill_target": None,
@@ -253,16 +296,21 @@ async def _load_initial_state(game_id: str) -> dict[str, Any]:
         "night_seer_result": None,
         "night_witch_action": "skip",
         "night_witch_target": None,
+        "night_guard_target": None,
         "night_deaths": [],
         # 女巫药水（初始未使用）
         "witch_save_used": False,
         "witch_poison_used": False,
+        "guard_last_target": None,
+        "pending_hunter_shot": None,
         # 白天临时数据（初始为空）
         "speeches": [],
         "votes": {},
         "eliminated_seat": None,
         "is_pk": False,
         "pk_seats": [],
+        "pre_pk_votes": {},
+        "pk_speeches": [],
         # 胜负
         "game_over": False,
         "winner": None,
@@ -302,29 +350,10 @@ async def run_game(game_id: str):
 
         # ─── 1.5 通知前端角色信息（混合模式） ───
         if initial_state.get("human_seat") is not None:
-            human_seat = initial_state["human_seat"]
-            human_player = next(
-                p for p in initial_state["players"] if p["seat_number"] == human_seat
-            )
-            # 如果人类是狼人，附带狼人同伴信息
-            companions = []
-            if human_player["role"] == "werewolf":
-                companions = [
-                    s for s in initial_state["werewolf_seats"] if s != human_seat
-                ]
             try:
-                from app.api.ws_handler import ws_manager
-                await ws_manager.broadcast(game_id, {
-                    "type": "game_started",
-                    "data": {
-                        "seat": human_seat,
-                        "role": human_player["role"],
-                        "player_name": human_player["player_name"],
-                        "werewolf_companions": companions,
-                    },
-                })
+                await _send_game_started(game_id, initial_state)
             except Exception as e:
-                logger.debug(f"[GameFlow] WS 广播角色失败: {e}")
+                logger.debug(f"[GameFlow] WS 定向发送角色失败: {e}")
 
         # ─── 2. 构建并编译图 ───
         graph = build_game_graph()

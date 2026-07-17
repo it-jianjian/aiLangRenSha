@@ -16,7 +16,18 @@ export interface GameConfig {
 export interface CreateGameRequest {
   mode: 'pure_ai' | 'mixed'
   player_name?: string
+  player_count?: 6 | 12
+  roster_type?: 'official' | 'custom'
+  roster?: Roster
   config?: GameConfig
+}
+
+export type PlayerRole = 'werewolf' | 'villager' | 'seer' | 'witch' | 'hunter' | 'guard'
+export type Roster = Record<PlayerRole, number>
+export interface RosterValidation { valid: boolean; errors: string[] }
+export interface GameCreated {
+  game_id: string; mode: string; status: string; owner_token: string; player_token?: string | null
+  player_count: number; roster_type: 'official' | 'custom'; roster: Roster; validation: RosterValidation
 }
 
 export interface PlayerInfo {
@@ -47,11 +58,15 @@ export interface GameDetail {
   end_reason?: string | null
   players: PlayerInfo[]
   rounds: any[]
+  player_count: number
+  roster_type: 'official' | 'custom'
+  roster: Roster
+  roster_locked: boolean
 }
 
 // ─── 操作相关 ────────────────────────────────────────────
 export interface NightActionRequest {
-  action_type: 'kill' | 'verify' | 'save' | 'poison' | 'skip'
+  action_type: 'kill' | 'verify' | 'save' | 'poison' | 'guard' | 'hunter_shoot' | 'skip'
   target_seat?: number | null
 }
 
@@ -68,6 +83,7 @@ export interface VoteRequest {
 // ─── 回放相关 ────────────────────────────────────────────
 export interface ReplayStep {
   step_index: number
+  round?: number
   phase: string
   event_type: string
   description: string
@@ -79,10 +95,16 @@ export interface ReplayData {
   total_steps: number
   steps: ReplayStep[]
   role_mapping: Record<string, string>
+  player_count: number
+  roster: Roster
+  winner: string
+  end_reason: string
 }
 
 // ─── WebSocket 消息 ───────────────────────────────────────
 export interface WSMessage {
+  event_id?: string
+  event_order?: string
   type: string
   data: any
   timestamp: string
@@ -91,6 +113,7 @@ export interface WSMessage {
 // ─── WebSocket 消息类型枚举 ──────────────────────────────
 export type WSMessageType =
   | 'game_started'
+  | 'identity_sync'
   | 'phase_change'
   | 'night_action_prompt'
   | 'night_result'

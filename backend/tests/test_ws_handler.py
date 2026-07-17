@@ -2,8 +2,12 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.ws_handler import ConnectionManager
+from app.api.ws_handler import ConnectionManager, extract_authentication_token, resolve_player_binding
+from app.db.session import Base
+from app.models.game import Game, GamePlayer, GameMode, PlayerType
+from app.services.game_service import GameService
 
 
 @pytest.fixture
@@ -72,6 +76,157 @@ class TestConnectionManager:
         """无连接时 broadcast 不应报错"""
         await manager.broadcast("nonexistent-game", {"type": "test"})  # 不抛异常即通过
 
+    @pytest.mark.asyncio
+    async def test_send_to_seat_only_sends_private_message_to_bound_player(self, manager):
+        """私密结果必须只投递到服务端已绑定的对应座位连接。"""
+        ws1, ws2 = AsyncMock(), AsyncMock()
+        await manager.connect(ws1, "game-001")
+        await manager.connect(ws2, "game-001")
+        manager.bind_player(ws1, "game-001", player_seat=1)
+        manager.bind_player(ws2, "game-001", player_seat=2)
+
+        await manager.send_to_seat("game-001", 2, {"type": "private_seer_result", "data": {"target": 1}})
+
+        ws1.send_text.assert_not_called()
+        ws2.send_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reconnected_human_receives_identity_sync_without_leaking_to_other_seats(self, manager):
+        """重连后的同座位连接可恢复私密身份，其他座位绝不能收到。"""
+        original, reconnected, observer = AsyncMock(), AsyncMock(), AsyncMock()
+        await manager.connect(original, "game-001")
+        await manager.connect(reconnected, "game-001")
+        await manager.connect(observer, "game-001")
+        manager.bind_player(original, "game-001", player_seat=1)
+        manager.bind_player(reconnected, "game-001", player_seat=1)
+        manager.bind_player(observer, "game-001", player_seat=2)
+
+        await manager.send_to_seat("game-001", 1, {
+            "type": "identity_sync",
+            "data": {"seat": 1, "role": "werewolf", "werewolf_companions": [4]},
+        })
+
+        original.send_text.assert_called_once()
+        reconnected.send_text.assert_called_once()
+        observer.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connection_receives_no_private_message_until_authenticated_binding(self, manager):
+        """握手完成但首帧尚未认证的连接只能接收公共事件。"""
+        websocket = AsyncMock()
+        await manager.connect(websocket, "game-001")
+
+        await manager.send_to_seat("game-001", 1, {"type": "identity_sync", "data": {}})
+
+        websocket.send_text.assert_not_called()
+
+    def test_extract_authentication_token_accepts_only_a_valid_first_frame(self):
+        """仅规范的 authenticate 首帧可提供令牌；非法内容不回显凭据。"""
+        assert extract_authentication_token('{"type":"authenticate","data":{"player_token":"token-value"}}') == "token-value"
+        assert extract_authentication_token('{"type":"authenticate","data":{}}') is None
+        assert extract_authentication_token('{"type":"other","data":{"player_token":"token-value"}}') is None
+        assert extract_authentication_token('not-json') is None
+
     def test_connection_count_unknown_game(self, manager):
         """未知 game_id 的连接数应为 0"""
         assert manager.connection_count("unknown") == 0
+
+
+# ================================================================
+# WS 认证绑定决策（resolve_player_binding）
+# 修复“开局后需手动刷新”bug：等待态也允许绑定，避免 1008 断连
+# ================================================================
+
+async def _build_auth_db(tmp_path, status: str, human_role: str = "villager"):
+    """构建含一局游戏+人类玩家的异步 SQLite DB，返回 (engine, factory, player_token, game_id)。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ws-auth.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            lambda sc: Base.metadata.create_all(
+                sc, tables=[Game.__table__, GamePlayer.__table__]
+            )
+        )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    token = "probe-token-abc"
+    async with factory() as session:
+        session.add(Game(id="g-ws-1", mode=GameMode.MIXED, status=status, player_count=6))
+        await session.commit()
+    async with factory() as session:
+        session.add(GamePlayer(
+            id="p-ws-1", game_id="g-ws-1", seat_number=1,
+            player_type=PlayerType.HUMAN, role=human_role,
+            player_name="探针", is_alive=True,
+            access_token_hash=GameService._token_hash(token),
+        ))
+        await session.commit()
+    return engine, factory, token, "g-ws-1"
+
+
+@pytest.mark.asyncio
+async def test_waiting_game_binds_without_identity_sync(tmp_path):
+    """等待态绑定应成功但**不**投递身份（角色不应在等待房间提前暴露）。"""
+    engine, factory, token, gid = await _build_auth_db(tmp_path, status="waiting")
+    try:
+        async with factory() as session:
+            binding = await resolve_player_binding(session, gid, token)
+        assert binding is not None
+        assert binding["seat_number"] == 1
+        assert binding["identity_sync_allowed"] is False
+        assert binding["companions"] == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_playing_game_binds_with_identity_sync(tmp_path):
+    """进行中状态绑定应成功并允许投递身份。"""
+    engine, factory, token, gid = await _build_auth_db(tmp_path, status="playing", human_role="villager")
+    try:
+        async with factory() as session:
+            binding = await resolve_player_binding(session, gid, token)
+        assert binding is not None
+        assert binding["identity_sync_allowed"] is True
+        assert binding["role"] == "villager"
+        assert binding["companions"] == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_playing_werewolf_gets_companions(tmp_path):
+    """进行中状态的狼人玩家应获得同伴列表。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ws-wolf.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda sc: Base.metadata.create_all(sc, tables=[Game.__table__, GamePlayer.__table__]))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    token = "wolf-token"
+    async with factory() as session:
+        session.add(Game(id="g-ws-2", mode=GameMode.MIXED, status="playing", player_count=6))
+        for seat, role, ptype in [(1, "werewolf", PlayerType.HUMAN), (3, "werewolf", PlayerType.AI), (5, "werewolf", PlayerType.AI)]:
+            session.add(GamePlayer(
+                id=f"p-ws-{seat}", game_id="g-ws-2", seat_number=seat,
+                player_type=ptype, role=role, player_name=f"AI-{seat}", is_alive=True,
+                access_token_hash=GameService._token_hash(token) if seat == 1 else None,
+            ))
+        await session.commit()
+    try:
+        async with factory() as session:
+            binding = await resolve_player_binding(session, "g-ws-2", token)
+        assert binding is not None
+        assert binding["role"] == "werewolf"
+        assert binding["identity_sync_allowed"] is True
+        assert binding["companions"] == [3, 5]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_token_returns_none(tmp_path):
+    """错误令牌应返回 None（连接将被 1008 关闭）。"""
+    engine, factory, _token, gid = await _build_auth_db(tmp_path, status="waiting")
+    try:
+        async with factory() as session:
+            binding = await resolve_player_binding(session, gid, "wrong-token")
+        assert binding is None
+    finally:
+        await engine.dispose()

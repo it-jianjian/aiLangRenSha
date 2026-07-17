@@ -18,7 +18,6 @@ PRD 规则要点：
 
 import asyncio
 import logging
-import random
 
 from app.models.game import PlayerRole
 from app.graphs.state import GameFlowState
@@ -28,13 +27,32 @@ from app.graphs.event_bus import (
     get_alive_by_role,
     kill_player,
 )
-from app.graphs.nodes.agent_nodes import call_agent_werewolf_kill, call_agent_seer_verify, call_agent_witch
+from app.graphs.nodes.agent_nodes import call_agent_werewolf_kill, call_agent_seer_verify, call_agent_witch, call_agent_guard, call_agent_hunter_shoot
 from app.services.human_action_bridge import human_bridge
+from app.services.game_rules import can_hunter_shoot, guard_target_is_valid, resolve_night_deaths
 
 logger = logging.getLogger(__name__)
 
 # P2 阶段 AI 行动间隔（秒），模拟思考时间提升观赏性
 AI_ACTION_DELAY = 1.5  # AI 思考时间（秒），提升观赏性
+
+
+async def _update_game_round_summary(game_id: str, round_number: int, **values) -> None:
+    from app.db.session import async_session_factory
+    from app.models.game import GameRound
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(GameRound).where(GameRound.game_id == game_id, GameRound.round_number == round_number)
+        )
+        game_round = result.scalar_one_or_none()
+        if game_round is None:
+            game_round = GameRound(game_id=game_id, round_number=round_number)
+            session.add(game_round)
+        for key, value in values.items():
+            setattr(game_round, key, value)
+        await session.commit()
 
 
 async def night_start_node(state: GameFlowState) -> dict:
@@ -44,7 +62,7 @@ async def night_start_node(state: GameFlowState) -> dict:
     - 如果是第一夜：current_round 已经是 1（初始状态设的）
     - 如果不是第一夜：current_round + 1
     - 重置所有夜晚临时数据为空/None
-    - 记录 phase_change 事件
+    - 记录唯一可公开的 night_phase 阶段边界事件
 
     返回更新字段：
     - current_round: 新回合号
@@ -58,8 +76,7 @@ async def night_start_node(state: GameFlowState) -> dict:
         new_round = 1
 
     await record_event(
-        state["game_id"], new_round, "system", "phase_change",
-        event_data={"phase": "night", "round": new_round},
+        state["game_id"], new_round, "night", "night_phase",
     )
 
     # ─── 创建本轮 GameRound 记录（如不存在） ───
@@ -92,6 +109,10 @@ async def night_start_node(state: GameFlowState) -> dict:
         prev_votes = dict(state.get("votes", {}))
         prev_deaths = list(state.get("night_deaths", []))
         prev_eliminated = state.get("eliminated_seat")
+        prev_is_pk = state.get("is_pk", False)
+        prev_pk_seats = list(state.get("pk_seats", []))
+        prev_pre_pk_votes = dict(state.get("pre_pk_votes", {}))
+        prev_pk_speeches = list(state.get("pk_speeches", []))
         # 只有当上一轮有实质内容时才记录
         if prev_speeches or prev_votes or prev_deaths or prev_eliminated is not None:
             round_summary = {
@@ -101,6 +122,16 @@ async def night_start_node(state: GameFlowState) -> dict:
                 "night_deaths": prev_deaths,
                 "eliminated_seat": prev_eliminated,
             }
+            # 平票 PK 详情：让 AI 能记忆“上轮出现了平票、两人 battle 及当时的投票”
+            if prev_is_pk:
+                round_summary["is_pk"] = True
+                round_summary["pk_seats"] = prev_pk_seats
+                round_summary["pre_pk_votes"] = {
+                    str(k): v for k, v in prev_pre_pk_votes.items()
+                }
+                round_summary["pk_speeches"] = [
+                    {"seat": s["seat"], "content": s["content"]} for s in prev_pk_speeches
+                ]
             game_history.append(round_summary)
             logger.info(f"[Night] 第 {prev_round} 轮摘要已加入游戏历史（共 {len(game_history)} 轮）")
 
@@ -112,13 +143,17 @@ async def night_start_node(state: GameFlowState) -> dict:
         "night_seer_result": None,
         "night_witch_action": "skip",
         "night_witch_target": None,
+        "night_guard_target": None,
         "night_deaths": [],
+        "pending_hunter_shot": None,
         # 重置白天数据
         "speeches": [],
         "votes": {},
         "eliminated_seat": None,
         "is_pk": False,
         "pk_seats": [],
+        "pre_pk_votes": {},
+        "pk_speeches": [],
         # 更新跨轮历史
         "game_history": game_history,
     }
@@ -167,7 +202,8 @@ async def night_werewolf_node(state: GameFlowState) -> dict:
             # 人类独狼：等待人类提交击杀目标
             action = await human_bridge.wait_for_action(
                 state["game_id"], "kill",
-                {"seat_number": sole_wolf["seat_number"], "player_name": sole_wolf["player_name"], "role": sole_wolf["role"]},
+                {"seat_number": sole_wolf["seat_number"], "player_name": sole_wolf["player_name"], "role": sole_wolf["role"],
+                 "phase": "night", "allowed_target_seats": alive_non_werewolf_seats},
             )
             target = action.get("target_seat")
             if target not in alive_non_werewolf_seats:
@@ -184,7 +220,8 @@ async def night_werewolf_node(state: GameFlowState) -> dict:
                 # 人类狼人：等待提交击杀目标
                 action = await human_bridge.wait_for_action(
                     state["game_id"], "kill",
-                    {"seat_number": ww["seat_number"], "player_name": ww["player_name"], "role": ww["role"]},
+                    {"seat_number": ww["seat_number"], "player_name": ww["player_name"], "role": ww["role"],
+                     "phase": "night", "allowed_target_seats": alive_non_werewolf_seats},
                 )
                 choices[ww["seat_number"]] = action.get("target_seat")
             else:
@@ -206,9 +243,9 @@ async def night_werewolf_node(state: GameFlowState) -> dict:
                 target = choices[human_choices[0]]
                 agreement = "human_priority"
             else:
-                # 双 AI → 随机选一个目标
-                target = random.choice(targets)
-                agreement = "random"
+                # 双 AI → 稳定仲裁（较小座位狼人优先），避免正常主路径随机。
+                target = choices[sorted(choices)[0]]
+                agreement = "stable_ai_priority"
 
     # ─── 记录事件 ───
     await record_event(
@@ -267,7 +304,8 @@ async def night_seer_node(state: GameFlowState) -> dict:
     if seer["player_type"] == "human":
         action = await human_bridge.wait_for_action(
             state["game_id"], "verify",
-            {"seat_number": seer["seat_number"], "player_name": seer["player_name"], "role": seer["role"]},
+            {"seat_number": seer["seat_number"], "player_name": seer["player_name"], "role": seer["role"],
+             "phase": "night", "allowed_target_seats": alive_other_seats},
         )
         target = action.get("target_seat")
     else:
@@ -297,14 +335,13 @@ async def night_seer_node(state: GameFlowState) -> dict:
     if seer["player_type"] == "human":
         try:
             from app.api.ws_handler import ws_manager
-            await ws_manager.broadcast(state["game_id"], {
+            await ws_manager.send_to_seat(state["game_id"], seer["seat_number"], {
                 "type": "private_seer_result",
                 "data": {
                     "target": target,
                     "result": result,
                     "round": state["current_round"],
                 },
-                "private_seat": seer["seat_number"],  # 前端用这个判断是否显示
             })
         except Exception as e:
             logger.debug(f"[Night] WS 私有通知失败: {e}")
@@ -360,14 +397,13 @@ async def night_witch_node(state: GameFlowState) -> dict:
         kill_target = state.get("night_kill_target")
         try:
             from app.api.ws_handler import ws_manager
-            await ws_manager.broadcast(state["game_id"], {
+            await ws_manager.send_to_seat(state["game_id"], witch["seat_number"], {
                 "type": "private_witch_info",
                 "data": {
                     "night_kill_target": kill_target,
                     "save_available": save_available,
                     "poison_available": poison_available,
                 },
-                "private_seat": witch["seat_number"],
             })
         except Exception as e:
             logger.debug(f"[Night] WS 女巫私有通知失败: {e}")
@@ -375,7 +411,9 @@ async def night_witch_node(state: GameFlowState) -> dict:
     if witch["player_type"] == "human":
         human_action = await human_bridge.wait_for_action(
             state["game_id"], "save",
-            {"seat_number": witch["seat_number"], "player_name": witch["player_name"], "role": witch["role"]},
+            {"seat_number": witch["seat_number"], "player_name": witch["player_name"], "role": witch["role"],
+             "phase": "night", "allowed_target_seats": alive_other_seats,
+             "empty_target_actions": ["save", "skip"]},
         )
         action = human_action.get("action_type", "skip")
         target = human_action.get("target_seat")
@@ -415,6 +453,30 @@ async def night_witch_node(state: GameFlowState) -> dict:
     return updates
 
 
+async def night_guard_node(state: GameFlowState) -> dict:
+    """守卫行动：存活守卫每夜守护一名存活玩家，不能连续守同一目标。"""
+    guard = next((p for p in state["players"] if p["role"] == PlayerRole.GUARD and p["is_alive"]), None)
+    if guard is None:
+        return {"night_guard_target": None}
+    alive_seats = [p["seat_number"] for p in get_alive_players(state["players"])]
+    candidates = [seat for seat in alive_seats if seat != state.get("guard_last_target")]
+    if guard["player_type"] == "human":
+        action = await human_bridge.wait_for_action(state["game_id"], "guard", {
+            "seat_number": guard["seat_number"], "role": "guard", "phase": "night",
+            "last_target": state.get("guard_last_target"), "allowed_target_seats": candidates,
+        })
+        target = action.get("target_seat")
+    else:
+        target = call_agent_guard(state, guard, candidates)
+    valid, _ = guard_target_is_valid(target, state.get("guard_last_target"), alive_seats) if target is not None else (False, "")
+    if not valid:
+        # AI 兜底可跳过；人类请求在 bridge 中已被服务端拒绝，不能静默降级。
+        target = None
+    await record_event(state["game_id"], state["current_round"], "night", "night_guard", seat_number=guard["seat_number"], event_data={"target": target})
+    await _update_game_round_summary(state["game_id"], state["current_round"], guard_target_seat=target)
+    return {"night_guard_target": target, "guard_last_target": target or state.get("guard_last_target")}
+
+
 async def night_settle_node(state: GameFlowState) -> dict:
     """夜晚结算节点
 
@@ -429,29 +491,25 @@ async def night_settle_node(state: GameFlowState) -> dict:
 
     返回：更新后的 players（标记死亡）+ night_deaths 列表
     """
-    night_deaths = []
+    death_causes = resolve_night_deaths(
+        state["night_kill_target"], state["night_witch_action"], state["night_witch_target"], state.get("night_guard_target"),
+    )
+    night_deaths = sorted(death_causes)
     players = state["players"]
 
-    # ─── 处理狼人击杀 ───
     kill_target = state["night_kill_target"]
-    if kill_target is not None:
-        if state["night_witch_action"] == "save":
-            # 女巫用解药救了被击杀者 → 存活
-            logger.info(f"[Settle] 女巫使用解药，{kill_target}号被救活")
-        else:
-            # 未被救 → 死亡
-            night_deaths.append(kill_target)
-
-    # ─── 处理女巫毒药 ───
-    if state["night_witch_action"] == "poison" and state["night_witch_target"] is not None:
-        poison_target = state["night_witch_target"]
-        if poison_target not in night_deaths:
-            night_deaths.append(poison_target)
 
     # ─── 更新玩家状态 ───
     for seat in night_deaths:
-        reason = "killed_by_werewolf" if seat == kill_target else "poisoned"
+        reason = death_causes[seat]
         players = kill_player(players, seat, state["current_round"], "night", reason)
+
+    pending_hunter_shot = None
+    for seat in night_deaths:
+        dead = next((p for p in players if p["seat_number"] == seat), None)
+        if dead and dead.get("role") == PlayerRole.HUNTER and can_hunter_shoot(dead.get("death_reason")):
+            pending_hunter_shot = {"seat_number": seat, "trigger": dead.get("death_reason"), "phase": "night"}
+            break
 
     # ─── 记录结算事件 ───
     await record_event(
@@ -461,6 +519,8 @@ async def night_settle_node(state: GameFlowState) -> dict:
             "kill_target": kill_target,
             "witch_action": state["night_witch_action"],
             "witch_target": state["night_witch_target"],
+            "guard_target": state.get("night_guard_target"),
+            "death_causes": death_causes,
         },
     )
 
@@ -472,5 +532,46 @@ async def night_settle_node(state: GameFlowState) -> dict:
     return {
         "night_deaths": night_deaths,
         "players": players,
+        "pending_hunter_shot": pending_hunter_shot,
         "post_victory_route": "after_night",  # 告诉路由函数：这是夜晚后的胜负检查
     }
+
+
+async def hunter_revenge_node(state: GameFlowState) -> dict:
+    """仅消费显式 pending_hunter_shot；毒杀绝不触发，不扫描本轮死者推导资格。"""
+    pending = state.get("pending_hunter_shot")
+    if isinstance(pending, dict):
+        pending_seat = pending.get("seat_number")
+        pending_trigger = pending.get("trigger")
+    elif pending is not None:
+        pending_seat = pending
+        pending_trigger = None
+    else:
+        # 未显式设置待开枪状态，不隐式推导资格
+        return {"pending_hunter_shot": None}
+    hunter = next((p for p in state["players"] if p["role"] == PlayerRole.HUNTER and p["seat_number"] == pending_seat), None)
+    if hunter is None or not can_hunter_shoot(hunter.get("death_reason")):
+        return {"pending_hunter_shot": None}
+    alive = [p["seat_number"] for p in get_alive_players(state["players"]) if p["seat_number"] != hunter["seat_number"]]
+    if not alive:
+        return {"pending_hunter_shot": None}
+    if hunter["player_type"] == "human":
+        action = await human_bridge.wait_for_action(state["game_id"], "hunter_shoot", {
+            "seat_number": hunter["seat_number"], "role": "hunter",
+            "phase": hunter.get("death_phase") or "night", "allowed_target_seats": alive,
+            "empty_target_actions": ["hunter_shoot"],
+        }, timeout_seconds=60)
+        target = action.get("target_seat")
+    else:
+        target = call_agent_hunter_shoot(state, hunter, alive, pending_trigger or hunter.get("death_reason"))
+    if target not in alive:
+        target = None
+    if target is not None:
+        phase = hunter.get("death_phase") or "night"
+        players = kill_player(state["players"], target, state["current_round"], phase, "hunter_shot")
+        await record_event(state["game_id"], state["current_round"], phase, "hunter_shot", seat_number=hunter["seat_number"], event_data={"target": target, "trigger": hunter["death_reason"]})
+        await _update_game_round_summary(state["game_id"], state["current_round"], hunter_shot_seat=target, hunter_shot_trigger=hunter["death_reason"])
+        return {"players": players, "pending_hunter_shot": None}
+    await record_event(state["game_id"], state["current_round"], hunter.get("death_phase") or "night", "hunter_revenge", seat_number=hunter["seat_number"], event_data={"result": "skip", "trigger": hunter["death_reason"]})
+    await _update_game_round_summary(state["game_id"], state["current_round"], hunter_shot_seat=None, hunter_shot_trigger=hunter["death_reason"])
+    return {"pending_hunter_shot": None}

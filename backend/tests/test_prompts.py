@@ -15,6 +15,7 @@ from app.agent.prompts import (
     get_role_strategy,
     get_decision_instruction,
     build_agent_prompt,
+    _format_game_context,
 )
 
 
@@ -105,3 +106,71 @@ class TestBuildAgentPrompt:
         # Human message 应包含角色策略相关内容
         content = human_msgs[0].content
         assert "药" in content or "解药" in content
+
+
+class TestPkHistoryRendering:
+    """测试平票 PK 详情在过往轮次回顾中的渲染
+
+    修复“只记得最终投票，不记得平票” bug：
+    AI 应能在历史中看到上轮出现了平票、两人 battle 及当时的投票。
+    """
+
+    def _pk_history_context(self) -> dict:
+        """构造含一轮 PK 历史的上下文。"""
+        return {
+            "current_round": 2,
+            "alive_seats": [1, 2, 3, 5, 6],
+            "action_type": "vote",
+            "game_history": [
+                {
+                    "round": 1,
+                    "speeches": [{"seat": 1, "content": "我是好人"}],
+                    "votes": {"1": 2, "3": 2, "5": None},  # PK 重投结果
+                    "night_deaths": [4],
+                    "eliminated_seat": 2,
+                    "is_pk": True,
+                    "pk_seats": [2, 3],
+                    "pre_pk_votes": {"1": 3, "2": 1, "5": 3, "6": 2},  # 首轮平票投票
+                    "pk_speeches": [
+                        {"seat": 2, "content": "我不是狼"},
+                        {"seat": 3, "content": "投我的是狼"},
+                    ],
+                }
+            ],
+        }
+
+    def test_pk_history_contains_tie_announcement(self):
+        """历史回顾应包含平票宣布与 PK 候选人。"""
+        text = _format_game_context(self._pk_history_context())
+        assert "平票" in text
+        assert "2号" in text and "3号" in text
+        assert "PK" in text
+
+    def test_pk_history_contains_first_round_votes(self):
+        """历史回顾应包含首轮平票投票明细。"""
+        text = _format_game_context(self._pk_history_context())
+        assert "首轮投票" in text
+        # 首轮投票中有 5号→3号
+        assert "5号→3号" in text
+
+    def test_pk_history_contains_pk_speeches(self):
+        """历史回顾应包含 PK 发言（两人 battle 内容）。"""
+        text = _format_game_context(self._pk_history_context())
+        assert "PK 发言" in text
+        assert "我不是狼" in text
+        assert "投我的是狼" in text
+
+    def test_pk_history_labels_final_votes_as_pk_revote(self):
+        """PK 轮的最终投票应标注为“PK 重投”而非“投票”。"""
+        text = _format_game_context(self._pk_history_context())
+        assert "PK 重投" in text
+        # 不应把 PK 轮的 votes 误标为普通“投票:”
+        assert text.count("投票:") == 0
+
+    def test_current_pk_indicator_shown(self):
+        """当前轮处于 PK 重投时应显示 PK 指示。"""
+        ctx = {"current_round": 1, "alive_seats": [1, 2, 3],
+               "action_type": "vote", "is_pk": True, "pk_seats": [2, 3]}
+        text = _format_game_context(ctx)
+        assert "平票 PK 重投环节" in text
+        assert "2" in text and "3" in text

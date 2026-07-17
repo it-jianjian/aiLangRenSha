@@ -17,9 +17,12 @@
 import asyncio
 import json
 import random
+import hashlib
+import secrets
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +31,7 @@ from app.models.game import (
     Game, GamePlayer, GameRound, GameEvent, ChatMessage, Vote,
     GameMode, GameStatus, PlayerRole, PlayerType, EventType,
 )
+from app.services.game_rules import OFFICIAL_ROSTERS, validate_roster
 
 
 # ================================================================
@@ -47,7 +51,10 @@ ROLES_6_PLAYERS = [
 # AI 人设列表（每个 AI 玩家随机分配一个人设）
 # 人设会影响 LangChain PromptTemplate 中的角色风格，让 AI 发言更有个性
 # 例如："冷静分析师" 会倾向理性推理，"热情社交家" 会更多情感表达
-AI_PERSONAS = ["冷静分析师", "热情社交家", "逻辑推理者", "直觉玩家", "保守策略家", "冒险挑战者"]
+AI_PERSONAS = [
+    "冷静分析师", "热情社交家", "逻辑推理者", "直觉玩家", "保守策略家", "冒险挑战者",
+    "细节观察者", "强势领袖", "谨慎求证者", "幽默搅局者", "沉默思考者", "风险预判者",
+]
 
 
 class GameService:
@@ -89,9 +96,26 @@ class GameService:
             raise HTTPException(status_code=404, detail="对局不存在")
         return game
 
+    async def terminate_unrecoverable_playing_games(self) -> int:
+        """结束重启后失去内存执行器、且无法安全续跑的对局。"""
+        result = await self.db.execute(
+            select(Game).where(Game.status == GameStatus.PLAYING)
+        )
+        games = result.scalars().all()
+        if not games:
+            return 0
+
+        finished_at = datetime.now()
+        for game in games:
+            game.status = GameStatus.FINISHED
+            game.end_reason = "interrupted_by_restart"
+            game.finished_at = finished_at
+        await self.db.flush()
+        return len(games)
+
     # ─── 创建对局 ──────────────────────────────────────────
 
-    async def create_game(self, request: CreateGameRequest) -> Game:
+    async def create_game(self, request: CreateGameRequest) -> tuple[Game, str, str | None]:
         """创建对局 + 初始化 6 个玩家
 
         业务流程：
@@ -103,31 +127,31 @@ class GameService:
         4. 混合模式下记录人类玩家的 ID（用于后续操作校验）
         """
         # ─── 创建对局主记录 ───
+        roster = request.roster or dict(OFFICIAL_ROSTERS.get(request.player_count, OFFICIAL_ROSTERS[6]))
+        errors = validate_roster(request.player_count, request.roster_type, roster)
+        if errors:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail={"code": 40001, "errors": errors})
+        owner_token = secrets.token_urlsafe(32)
+        player_token = secrets.token_urlsafe(32) if request.mode == GameMode.MIXED else None
         game = Game(
             mode=request.mode,
             config_json=json.dumps(request.config.model_dump()),  # 配置序列化为 JSON 存储
+            player_count=request.player_count,
+            roster_type=request.roster_type,
+            roster_json=json.dumps(roster),
+            owner_token_hash=self._token_hash(owner_token),
         )
         self.db.add(game)
         await self.db.flush()                     # flush 生成 game.id，但还不 commit
 
-        # ─── 随机分配角色和人设 ───
-        roles = ROLES_6_PLAYERS.copy()
-        random.shuffle(roles)                     # 打乱角色顺序
-        personas = AI_PERSONAS.copy()
-        random.shuffle(personas)                  # 打乱人设顺序
-
-        # ─── 创建 6 个玩家 ───
-        for seat in range(1, 7):
-            # 混合模式下座位 1 固定为人类玩家
-            is_human = (request.mode == GameMode.MIXED and seat == 1)
+        for player_spec in self._build_player_specs(
+            request.mode, request.player_name, roster,
+            human_access_token_hash=self._token_hash(player_token or "") if player_token else None,
+        ):
             player = GamePlayer(
                 game_id=game.id,
-                seat_number=seat,
-                player_type=PlayerType.HUMAN if is_human else PlayerType.AI,
-                role=roles[seat - 1],             # 分配随机角色
-                # 人类玩家用提交的名字，AI 玩家用 "AI-{人设}" 格式
-                player_name=request.player_name if is_human else f"AI-{personas[seat - 1]}",
-                ai_persona=None if is_human else personas[seat - 1],
+                **player_spec,
             )
             self.db.add(player)
 
@@ -143,11 +167,45 @@ class GameService:
             game.human_player_id = human.id       # 后续操作时用此 ID 验证是否为人类玩家
 
         await self.db.flush()
-        return game
+        return game, owner_token, player_token
+
+    async def update_roster(self, game: Game, owner_token: str, player_count: int, roster_type: str, roster: dict[str, int]) -> list[str]:
+        self._assert_owner(game, owner_token)
+        if game.status != GameStatus.WAITING or game.roster_locked_at:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="对局已开始，配置已锁定")
+        errors = validate_roster(player_count, roster_type, roster)
+        game.player_count = player_count
+        game.roster_type = roster_type
+        game.roster_json = json.dumps(roster)
+        human = next((player for player in game.players if player.player_type == PlayerType.HUMAN), None)
+        human_name = human.player_name if human else None
+        human_access_token_hash = human.access_token_hash if human else None
+        await self.db.execute(delete(GamePlayer).where(GamePlayer.game_id == game.id))
+        await self.db.flush()
+        for player_spec in self._build_player_specs(
+            game.mode, human_name, roster, human_access_token_hash=human_access_token_hash,
+        ):
+            self.db.add(GamePlayer(game_id=game.id, **player_spec))
+        await self.db.flush()
+        if game.mode == GameMode.MIXED:
+            human_player = (await self.db.execute(
+                select(GamePlayer).where(
+                    GamePlayer.game_id == game.id,
+                    GamePlayer.player_type == PlayerType.HUMAN,
+                )
+            )).scalar_one()
+            game.human_player_id = human_player.id
+        return errors
+
+    async def reset_official_roster(self, game: Game, owner_token: str) -> dict[str, int]:
+        roster = dict(OFFICIAL_ROSTERS[game.player_count])
+        await self.update_roster(game, owner_token, game.player_count, "official", roster)
+        return roster
 
     # ─── 启动对局 ──────────────────────────────────────────
 
-    async def start_game(self, game: Game):
+    async def start_game(self, game: Game, owner_token: str):
         """启动对局
 
         业务流程：
@@ -157,14 +215,67 @@ class GameService:
            - create_task 会立即返回，游戏在后台运行
            - HTTP 响应不需要等游戏结束
         """
-        from datetime import datetime
+        self._assert_owner(game, owner_token)
+        errors = validate_roster(game.player_count, game.roster_type, json.loads(game.roster_json))
+        if errors:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail={"code": 40002, "errors": errors})
+        now = datetime.now()
+        result = await self.db.execute(
+            update(Game)
+            .where(
+                Game.id == game.id,
+                Game.status == GameStatus.WAITING,
+                Game.roster_locked_at.is_(None),
+            )
+            .values(status=GameStatus.PLAYING, started_at=now, roster_locked_at=now)
+        )
+        if result.rowcount != 1:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="对局已开始")
         game.status = GameStatus.PLAYING
-        game.started_at = datetime.now()
-        await self.db.flush()
+        game.started_at = now
+        game.roster_locked_at = now
 
         # 异步启动游戏流程（不阻塞 HTTP 响应）
         # asyncio.create_task 将协程放入事件循环后台执行
         asyncio.create_task(self._run_game_flow(game.id))
+
+    @staticmethod
+    def _token_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    @staticmethod
+    def _build_player_specs(
+        mode: str,
+        human_name: str | None,
+        roster: dict[str, int],
+        human_access_token_hash: str | None = None,
+    ) -> list[dict]:
+        """从最终阵容快照生成完整座位，创建和编辑阵容共用此唯一来源。"""
+        roles = [role for role, count in roster.items() for _ in range(count)]
+        random.shuffle(roles)
+        personas = AI_PERSONAS.copy()
+        random.shuffle(personas)
+        specs = []
+        for seat, role in enumerate(roles, start=1):
+            is_human = mode == GameMode.MIXED and seat == 1
+            spec = {
+                "seat_number": seat,
+                "player_type": PlayerType.HUMAN if is_human else PlayerType.AI,
+                "role": role,
+                "player_name": human_name if is_human else f"AI-{personas[seat - 1]}",
+                "ai_persona": None if is_human else personas[seat - 1],
+            }
+            if is_human:
+                spec["access_token_hash"] = human_access_token_hash
+            specs.append(spec)
+        return specs
+
+    def _assert_owner(self, game: Game, owner_token: str) -> None:
+        from fastapi import HTTPException
+        if not owner_token or not secrets.compare_digest(game.owner_token_hash or "", self._token_hash(owner_token)):
+            raise HTTPException(status_code=403, detail="仅房主可修改或开始对局")
 
     async def _run_game_flow(self, game_id: str):
         """运行游戏主流程（LangGraph StateGraph）
@@ -178,7 +289,7 @@ class GameService:
 
     # ─── 人类玩家操作（通过 HumanActionBridge 桥接） ─────
 
-    async def submit_night_action(self, game_id: str, request: NightActionRequest):
+    async def submit_night_action(self, game_id: str, player_seat: int, request: NightActionRequest):
         """人类玩家提交夜晚行动
 
         实现机制：
@@ -186,21 +297,23 @@ class GameService:
         - 此接口收到操作后，通过 human_bridge.submit_action() 唤醒游戏
         """
         from app.services.human_action_bridge import human_bridge
-        human_bridge.submit_action(game_id, {
+        human_bridge.submit_action(game_id, player_seat, {
             "action_type": request.action_type,
             "target_seat": request.target_seat,
         })
 
-    async def submit_speech(self, game_id: str, request: SpeechRequest):
+    async def submit_speech(self, game_id: str, player_seat: int, request: SpeechRequest):
         """人类玩家提交发言"""
         from app.services.human_action_bridge import human_bridge
-        human_bridge.submit_action(game_id, {
+        human_bridge.submit_action(game_id, player_seat, {
+            "action_type": request.action_type,
             "content": request.content,
         })
 
-    async def submit_vote(self, game_id: str, request: VoteRequest):
+    async def submit_vote(self, game_id: str, player_seat: int, request: VoteRequest):
         """人类玩家提交投票"""
         from app.services.human_action_bridge import human_bridge
-        human_bridge.submit_action(game_id, {
+        human_bridge.submit_action(game_id, player_seat, {
+            "action_type": "vote",
             "target_seat": request.target_seat,
         })

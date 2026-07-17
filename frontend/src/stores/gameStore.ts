@@ -38,6 +38,9 @@ interface GameStoreState {
     actionType: string
     seat: number
     role: string
+    allowedTargetSeats?: number[]
+    lastTarget?: number | null
+    canSkip?: boolean
   } | null
 
   // ─── WebSocket 消息流 ───
@@ -46,6 +49,7 @@ interface GameStoreState {
   // ─── Actions ───
   setGame: (gameId: string, mode: string) => void
   setPlayers: (players: PlayerInfo[]) => void
+  markPlayerDead: (seat: number) => void
   setMyRole: (seat: number, role: string, companions?: number[]) => void
   addSpeech: (speech: Speech) => void
   setVotes: (votes: Record<number, number | null>) => void
@@ -81,6 +85,11 @@ export const useGameStore = create<GameStoreState>((set) => ({
     set({ gameId, gameMode: mode, gameStatus: 'waiting' }),
 
   setPlayers: (players) => set({ players }),
+  markPlayerDead: (seat) => set((state) => ({
+    players: state.players.map((player) => (
+      player.seat_number === seat ? { ...player, is_alive: false } : player
+    )),
+  })),
 
   setMyRole: (seat, role, companions) => set({ mySeat: seat, myRole: role, myCompanions: companions || [] }),
 

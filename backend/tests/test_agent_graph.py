@@ -14,6 +14,17 @@ from app.graphs.agent_graph import run_agent, AgentState
 from app.agent.llm import MockWerewolfLLM
 
 
+class FixedDecisionLLM(MockWerewolfLLM):
+    fixed_content: str = '{"decision": 99, "reasoning": "越界目标"}'
+
+    def _generate(self, messages, stop=None, **kwargs):
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        msg = AIMessage(content=self.fixed_content)
+        return ChatResult(generations=[ChatGeneration(message=msg, text=self.fixed_content)])
+
+
 def _make_test_state(**overrides) -> AgentState:
     """创建测试用 AgentState"""
     base = {
@@ -137,3 +148,76 @@ class TestAgentSubgraph:
         # 降级后仍应有合法决策
         assert "decision" in result
         assert result["is_fallback"] is True
+
+    def test_run_agent_guard_fallback_consumes_allowed_target_seats_and_revalidates(self):
+        """guard 主链非法输出后，fallback 只能从服务端合法集合中选择并通过同一校验。"""
+        state = _make_test_state(
+            seat_number=6,
+            role="guard",
+            action_type="guard",
+            llm=FixedDecisionLLM(),
+        )
+        state["game_context"]["players"][5]["role"] = "guard"
+        state["game_context"]["allowed_target_seats"] = [3, 4]
+
+        result = run_agent(state)
+
+        assert result["is_fallback"] is True
+        assert result["decision"] in [3, 4]
+
+    def test_run_agent_hunter_can_fallback_to_skip_when_no_allowed_targets(self):
+        """hunter_shoot 主链支持可跳过契约，避免越界目标或随机主路径。"""
+        state = _make_test_state(
+            seat_number=5,
+            role="hunter",
+            action_type="hunter_shoot",
+            llm=FixedDecisionLLM(),
+        )
+        state["game_context"]["players"][4]["role"] = "hunter"
+        state["game_context"]["pending_hunter_shot"] = {"seat_number": 5, "trigger": "voted_out"}
+        state["game_context"]["allowed_target_seats"] = []
+        state["game_context"]["can_skip"] = True
+
+        result = run_agent(state)
+
+        assert result["is_fallback"] is True
+        assert result["decision"] is None
+
+    def test_run_agent_persists_agent_log_with_filtered_context_and_fallback_info(self, tmp_path, monkeypatch):
+        """run_agent 完成后应持久化 AgentLog，包含过滤上下文、原始输出、解析值和 fallback 标记。"""
+        from sqlalchemy import create_engine, select, text
+        from sqlalchemy.orm import Session
+        from app.db.session import Base
+        from app.models.game import AgentLog, Game
+
+        # 构造临时 SQLite 数据库
+        db_path = tmp_path / "agent-log-test.db"
+        sync_engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(sync_engine, tables=[Game.__table__, AgentLog.__table__])
+        with Session(sync_engine) as session:
+            session.add(Game(id="game-log-1", mode="pure_ai", status="playing", total_rounds=0))
+            session.commit()
+
+        # 让 run_agent 内部的 sync 引擎指向临时库
+        import app.graphs.agent_graph as ag_mod
+        original_get_sync_engine = getattr(ag_mod, "_get_sync_engine", None)
+        monkeypatch.setattr(ag_mod, "_get_sync_engine", lambda: sync_engine)
+
+        state = _make_test_state()
+        state["game_context"]["game_id"] = "game-log-1"
+        result = run_agent(state)
+
+        with Session(sync_engine) as session:
+            logs = session.execute(select(AgentLog).where(AgentLog.game_id == "game-log-1")).scalars().all()
+
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.seat_number == 1
+        assert log.action_type == "kill"
+        assert log.round_number == 1
+        assert log.context_json is not None  # 过滤后上下文已持久化
+        assert log.parsed_decision is not None  # 解析结果已持久化
+        assert log.is_fallback == result["is_fallback"]
+        assert log.latency_ms is not None
+
+        sync_engine.dispose()

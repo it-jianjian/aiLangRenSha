@@ -47,6 +47,55 @@ describe('apiService', () => {
       // Assert
       expect(result.game_id).toBe('test-002')
     })
+
+    it('createGame_shouldReturnOwnerTokenAndRosterSnapshot', async () => {
+      vi.spyOn(axiosClient, 'post').mockResolvedValue({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            game_id: 'twelve-player-game',
+            mode: 'pure_ai',
+            status: 'waiting',
+            owner_token: 'one-time-token',
+            player_count: 12,
+            roster_type: 'official',
+            roster: { werewolf: 4, villager: 4, seer: 1, witch: 1, hunter: 1, guard: 1 },
+            validation: { valid: true, errors: [] },
+          },
+        },
+      })
+
+      const result = await apiService.createGame({
+        mode: 'pure_ai',
+        player_count: 12,
+        roster_type: 'official',
+        roster: { werewolf: 4, villager: 4, seer: 1, witch: 1, hunter: 1, guard: 1 },
+      })
+
+      expect(result.owner_token).toBe('one-time-token')
+      expect(result.player_count).toBe(12)
+      expect(result.roster.hunter).toBe(1)
+    })
+
+    it('updateRoster_shouldSendOwnerTokenAndWholeRosterSnapshot', async () => {
+      vi.spyOn(axiosClient, 'patch').mockResolvedValue({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: { validation: { valid: true, errors: [] } },
+        },
+      })
+      const roster = { werewolf: 2, villager: 1, seer: 1, witch: 1, hunter: 1, guard: 0 }
+
+      await apiService.updateRoster('game-1', 'owner-token', 6, 'custom', roster)
+
+      expect(axiosClient.patch).toHaveBeenCalledWith(
+        '/games/game-1/roster',
+        { player_count: 6, roster_type: 'custom', roster },
+        { headers: { 'X-Owner-Token': 'owner-token' } },
+      )
+    })
   })
 
   describe('listGames', () => {
@@ -123,6 +172,22 @@ describe('apiService', () => {
 
       // Assert
       expect(result.status).toBe('playing')
+    })
+  })
+
+  describe('submitSpeech', () => {
+    it('submitSpeech_lastWords_shouldDeclareThePromptActionContract', async () => {
+      vi.spyOn(axiosClient, 'post').mockResolvedValue({
+        data: { code: 0, message: 'ok', data: { accepted: true } },
+      })
+
+      await apiService.submitSpeech('game-1', '请好人继续找狼', false, 'player-token', 'last_words')
+
+      expect(axiosClient.post).toHaveBeenCalledWith(
+        '/games/game-1/actions/speech',
+        { content: '请好人继续找狼', is_pk: false, action_type: 'last_words' },
+        { headers: { 'X-Player-Token': 'player-token' } },
+      )
     })
   })
 

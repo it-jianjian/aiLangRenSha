@@ -12,6 +12,9 @@ import type {
   GameSummary,
   GameDetail,
   ReplayData,
+  GameCreated,
+  Roster,
+  RosterValidation,
 } from '../types'
 
 // 创建 axios 实例
@@ -45,8 +48,18 @@ function unwrap<T>(response: { data: ApiResponse<T> }): T {
 
 export const apiService = {
   /** 创建对局 */
-  async createGame(req: CreateGameRequest): Promise<{ game_id: string; mode: string; status: string }> {
+  async createGame(req: CreateGameRequest): Promise<GameCreated> {
     const res = await client.post('/games', req)
+    return unwrap(res)
+  },
+
+  async updateRoster(gameId: string, ownerToken: string, playerCount: 6 | 12, rosterType: 'official' | 'custom', roster: Roster): Promise<{ validation: RosterValidation }> {
+    const res = await client.patch(`/games/${gameId}/roster`, { player_count: playerCount, roster_type: rosterType, roster }, { headers: { 'X-Owner-Token': ownerToken } })
+    return unwrap(res)
+  },
+
+  async resetOfficialRoster(gameId: string, ownerToken: string): Promise<{ player_count: number; roster: Roster; validation: RosterValidation }> {
+    const res = await client.post(`/games/${gameId}/roster/reset-official`, {}, { headers: { 'X-Owner-Token': ownerToken } })
     return unwrap(res)
   },
 
@@ -62,36 +75,42 @@ export const apiService = {
     return unwrap(res)
   },
 
+  async getPublicEvents(gameId: string): Promise<{ events: import('../types').WSMessage[] }> {
+    const res = await client.get(`/games/${gameId}/events`)
+    return unwrap(res)
+  },
+
   /** 开始对局 */
-  async startGame(gameId: string): Promise<{ game_id: string; status: string }> {
-    const res = await client.post(`/games/${gameId}/start`)
+  async startGame(gameId: string, ownerToken?: string): Promise<{ game_id: string; status: string }> {
+    const res = await client.post(`/games/${gameId}/start`, {}, ownerToken ? { headers: { 'X-Owner-Token': ownerToken } } : undefined)
     return unwrap(res)
   },
 
   /** 提交夜晚行动 */
-  async submitNightAction(gameId: string, actionType: string, targetSeat: number | null, playerSeat: number) {
+  async submitNightAction(gameId: string, actionType: string, targetSeat: number | null, playerToken: string) {
     const res = await client.post(`/games/${gameId}/actions/night`, {
       action_type: actionType,
       target_seat: targetSeat,
-    }, { headers: { 'X-Player-Seat': playerSeat } })
+    }, { headers: { 'X-Player-Token': playerToken } })
     return unwrap(res)
   },
 
   /** 提交发言 */
-  async submitSpeech(gameId: string, content: string, isPk: boolean, playerSeat: number) {
+  async submitSpeech(gameId: string, content: string, isPk: boolean, playerToken: string, actionType: 'speech' | 'last_words' = 'speech') {
     const res = await client.post(`/games/${gameId}/actions/speech`, {
       content,
       is_pk: isPk,
-    }, { headers: { 'X-Player-Seat': playerSeat } })
+      action_type: actionType,
+    }, { headers: { 'X-Player-Token': playerToken } })
     return unwrap(res)
   },
 
   /** 提交投票 */
-  async submitVote(gameId: string, targetSeat: number | null, isPkVote: boolean, playerSeat: number) {
+  async submitVote(gameId: string, targetSeat: number | null, isPkVote: boolean, playerToken: string) {
     const res = await client.post(`/games/${gameId}/actions/vote`, {
       target_seat: targetSeat,
       is_pk_vote: isPkVote,
-    }, { headers: { 'X-Player-Seat': playerSeat } })
+    }, { headers: { 'X-Player-Token': playerToken } })
     return unwrap(res)
   },
 

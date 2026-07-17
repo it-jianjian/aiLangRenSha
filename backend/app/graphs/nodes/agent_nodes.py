@@ -45,7 +45,7 @@ def call_agent(
     """
     agent_state = {
         "seat_number": player["seat_number"],
-        "role": player["role"],
+        "role": getattr(player["role"], "value", player["role"]),
         "player_name": player.get("player_name", f"{player['seat_number']}号"),
         "action_type": action_type,
         "game_context": game_state,
@@ -173,6 +173,44 @@ def call_agent_witch(
             return ("poison", poison_decision)
 
     return ("skip", None)
+
+
+def call_agent_guard(
+    game_state: dict[str, Any],
+    player: dict[str, Any],
+    allowed_target_seats: list[int],
+    llm: Any = None,
+) -> Optional[int]:
+    """守卫选择守护目标，服务端 allowed_target_seats 是唯一合法目标集合。"""
+    scoped_state = {**game_state, "allowed_target_seats": list(allowed_target_seats)}
+    target = call_agent(scoped_state, player, "guard", llm)
+    if target not in allowed_target_seats:
+        target = allowed_target_seats[0] if allowed_target_seats else None
+        logger.warning(f"[Agent] 守卫{player['seat_number']}号 决策异常，降级合法目标: {target}")
+    return target
+
+
+def call_agent_hunter_shoot(
+    game_state: dict[str, Any],
+    player: dict[str, Any],
+    allowed_target_seats: list[int],
+    trigger: str | None,
+    llm: Any = None,
+) -> Optional[int]:
+    """猎人选择是否开枪；可返回 None 表示明确跳过。"""
+    scoped_state = {
+        **game_state,
+        "allowed_target_seats": list(allowed_target_seats),
+        "can_skip": True,
+        "pending_hunter_shot": {"seat_number": player["seat_number"], "trigger": trigger},
+    }
+    target = call_agent(scoped_state, player, "hunter_shoot", llm)
+    if target is None:
+        return None
+    if target not in allowed_target_seats:
+        target = None
+        logger.warning(f"[Agent] 猎人{player['seat_number']}号 决策异常，降级为不开枪")
+    return target
 
 
 # ================================================================

@@ -7,16 +7,26 @@
 
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, Button, Table, Space, message, Tag, Typography } from 'antd'
+import { Card, Button, Table, Space, message, Tag, Typography, Radio, InputNumber } from 'antd'
 import { RobotOutlined, UserOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { apiService } from '../services/api'
-import type { GameSummary } from '../types'
+import type { GameSummary, Roster } from '../types'
 
 const { Title, Text } = Typography
 
 export default function LobbyPage() {
   const navigate = useNavigate()
   const [selectedMode, setSelectedMode] = useState<'pure_ai' | 'mixed' | null>(null)
+  const [playerCount, setPlayerCount] = useState<6 | 12>(6)
+  const [rosterType, setRosterType] = useState<'official' | 'custom'>('official')
+  const officialRoster = (count: 6 | 12): Roster => ({ werewolf: count === 6 ? 2 : 4, villager: count === 6 ? 2 : 4, seer: 1, witch: 1, hunter: count === 12 ? 1 : 0, guard: count === 12 ? 1 : 0 })
+  const [roster, setRoster] = useState<Roster>(officialRoster(6))
+  const updateCount = (count: 6 | 12) => { setPlayerCount(count); setRosterType('official'); setRoster(officialRoster(count)) }
+  const validationErrors = [
+    Object.values(roster).reduce((sum, value) => sum + value, 0) !== playerCount ? `当前 ${Object.values(roster).reduce((sum, value) => sum + value, 0)} / ${playerCount} 人` : '',
+    roster.werewolf !== (playerCount === 6 ? 2 : 4) ? `${playerCount} 人局狼人必须为 ${playerCount === 6 ? 2 : 4} 名` : '',
+    ...(['seer', 'witch', 'hunter', 'guard'] as const).filter(role => roster[role] > 1).map(role => `${role} 最多 1 名`),
+  ].filter(Boolean)
   const [creating, setCreating] = useState(false)
   const [games, setGames] = useState<GameSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -54,7 +64,12 @@ export default function LobbyPage() {
       const result = await apiService.createGame({
         mode: selectedMode,
         player_name: selectedMode === 'mixed' ? playerName : undefined,
+        player_count: playerCount,
+        roster_type: rosterType,
+        roster,
       })
+      sessionStorage.setItem(`game-owner-token:${result.game_id}`, result.owner_token)
+      if (result.player_token) sessionStorage.setItem(`game-player-token:${result.game_id}`, result.player_token)
       message.success('对局创建成功！')
       navigate(`/game/${result.game_id}`)
     } catch (e) {
@@ -103,7 +118,7 @@ export default function LobbyPage() {
         >
           <RobotOutlined style={{ fontSize: 32, color: '#1677ff' }} />
           <Title level={4} style={{ marginTop: 12 }}>纯 AI 对战</Title>
-          <Text type="secondary">6 个 AI Agent 自动完成一局，可旁观观察</Text>
+          <Text type="secondary">{playerCount} 个 AI Agent 自动完成一局，可旁观观察</Text>
         </Card>
 
         <Card
@@ -113,7 +128,7 @@ export default function LobbyPage() {
         >
           <UserOutlined style={{ fontSize: 32, color: '#52c41a' }} />
           <Title level={4} style={{ marginTop: 12 }}>人类 + AI 混合</Title>
-          <Text type="secondary">1 名人类玩家 + 5 个 AI，亲身体验</Text>
+          <Text type="secondary">1 名人类玩家 + {playerCount - 1} 个 AI，亲身体验</Text>
         </Card>
       </Space>
 
@@ -128,13 +143,30 @@ export default function LobbyPage() {
         </div>
       )}
 
+      <div style={{ textAlign: 'center', marginBottom: 16 }}>
+        <Text style={{ marginRight: 12 }}>对局人数：</Text>
+        <Radio.Group value={playerCount} onChange={(event) => updateCount(event.target.value)}>
+          <Radio.Button value={6}>6 人（经典）</Radio.Button>
+          <Radio.Button value={12}>12 人（含猎人、守卫）</Radio.Button>
+        </Radio.Group>
+      </div>
+      <Card size="small" title="阵容配置" style={{ marginBottom: 16 }}>
+        <Radio.Group value={rosterType} onChange={(event) => { setRosterType(event.target.value); if (event.target.value === 'official') setRoster(officialRoster(playerCount)) }}>
+          <Radio value="official">官方默认</Radio><Radio value="custom">自定义阵容</Radio>
+        </Radio.Group>
+        <Space wrap style={{ marginTop: 12 }}>
+          {(Object.keys(roster) as (keyof Roster)[]).map(role => <span key={role}>{role}: <InputNumber min={0} max={role === 'werewolf' ? (playerCount === 6 ? 2 : 4) : role === 'villager' ? playerCount : 1} disabled={rosterType === 'official' || role === 'werewolf'} value={roster[role]} onChange={(value) => setRoster({ ...roster, [role]: Number(value || 0) })} /></span>)}
+        </Space>
+        {validationErrors.map(error => <Text key={error} type="danger" style={{ display: 'block', marginTop: 6 }}>{error}</Text>)}
+      </Card>
+
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         <Button
           type="primary"
           size="large"
           icon={<ThunderboltOutlined />}
           loading={creating}
-          disabled={!selectedMode}
+          disabled={!selectedMode || validationErrors.length > 0}
           onClick={handleCreate}
         >
           开始对局

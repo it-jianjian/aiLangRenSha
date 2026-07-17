@@ -172,3 +172,46 @@ class TestValidateDecision:
             own_seat=6,
         )
         assert valid is True
+
+    def test_guard_must_use_server_allowed_targets(self):
+        """守卫只能选择服务端 allowed_target_seats 中的目标。"""
+        valid, _ = validate_decision(
+            decision=4,
+            action_type="guard",
+            alive_seats=[1, 2, 3, 4],
+            own_seat=1,
+            allowed_target_seats=[2, 3],
+        )
+
+        assert valid is False
+
+    def test_hunter_shoot_can_skip_or_use_server_allowed_targets(self):
+        """猎人可明确跳过；开枪目标必须来自服务端 allowed_target_seats。"""
+        skip_valid, _ = validate_decision(
+            decision=None,
+            action_type="hunter_shoot",
+            alive_seats=[2, 3, 4],
+            own_seat=1,
+            allowed_target_seats=[2, 3],
+            can_skip=True,
+        )
+        target_valid, _ = validate_decision(
+            decision=3,
+            action_type="hunter_shoot",
+            alive_seats=[2, 3, 4],
+            own_seat=1,
+            allowed_target_seats=[2, 3],
+            can_skip=True,
+        )
+        invalid, _ = validate_decision(
+            decision=4,
+            action_type="hunter_shoot",
+            alive_seats=[2, 3, 4],
+            own_seat=1,
+            allowed_target_seats=[2, 3],
+            can_skip=True,
+        )
+
+        assert skip_valid is True
+        assert target_valid is True
+        assert invalid is False

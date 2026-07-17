@@ -9,7 +9,7 @@
          node_func → ai_xxx_decision → random choice
 
 设计说明：
-- 每个函数独立创建 DB session，避免跨节点共享 session 的生命周期问题
+- 常规事件独立创建 DB session；需要业务原子性的节点可复用事件实体构造与提交后广播能力
 - WS 广播在 P2 阶段为桩实现（仅 logging），P3 阶段接入 WebSocket Manager
 - AI 随机决策函数在 P3 阶段会被 Agent 子图替换，当前提供基础可玩性
 """
@@ -23,6 +23,7 @@ from typing import Optional
 
 from app.db.session import async_session_factory
 from app.models.game import GameEvent, ChatMessage, GamePlayer, PlayerRole, PlayerType
+from app.services.public_events import to_public_event
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,41 @@ logger = logging.getLogger(__name__)
 # ================================================================
 # 事件记录（写入 DB + 日志）
 # ================================================================
+
+def create_game_event(
+    game_id: str,
+    round_number: int,
+    phase: str,
+    event_type: str,
+    seat_number: Optional[int] = None,
+    event_data: Optional[dict] = None,
+) -> GameEvent:
+    """构造事件实体；调用方可将其加入自己的业务事务。"""
+    return GameEvent(
+        game_id=game_id,
+        round_number=round_number,
+        phase=phase,
+        event_type=event_type,
+        seat_number=seat_number,
+        event_data=json.dumps(event_data, ensure_ascii=False) if event_data else None,
+    )
+
+
+async def broadcast_persisted_event(event: GameEvent) -> None:
+    """仅广播已经成功提交的事件，广播失败不改变持久化事实。"""
+    logger.info(
+        f"[Event] R{event.round_number} {event.phase}/{event.event_type} "
+        f"seat={event.seat_number} data={event.event_data}"
+    )
+    try:
+        from app.api.ws_handler import ws_manager
+
+        public_msg = to_public_event(event)
+        if public_msg is not None:
+            await ws_manager.broadcast(event.game_id, public_msg)
+    except Exception as e:
+        logger.debug(f"[EventBus] WebSocket 广播失败: {e}")
+
 
 async def record_event(
     game_id: str,
@@ -55,54 +91,19 @@ async def record_event(
         3. 广播到 WebSocket（前端实时推送）
     """
     # ─── 写入数据库 ───
-    async with async_session_factory() as session:
-        event = GameEvent(
-            game_id=game_id,
-            round_number=round_number,
-            phase=phase,
-            event_type=event_type,
-            seat_number=seat_number,
-            event_data=json.dumps(event_data, ensure_ascii=False) if event_data else None,
-        )
-        session.add(event)
-        await session.commit()
-
-    # ─── 日志输出（调试 + 审计） ───
-    logger.info(
-        f"[Event] R{round_number} {phase}/{event_type} "
-        f"seat={seat_number} data={event_data}"
+    event = create_game_event(
+        game_id, round_number, phase, event_type,
+        seat_number=seat_number, event_data=event_data,
     )
+    async with async_session_factory() as session:
+        session.add(event)
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
-    # ─── WebSocket 广播 ───
-    # 夜晚事件的敏感信息（击杀目标、查验结果、女巫行动）不广播给所有玩家
-    # 私有信息已通过 private_* 消息单独发送给对应角色
-    try:
-        from app.api.ws_handler import ws_manager
-
-        # 夜晚事件过滤：只广播主持人风格的通用消息，不泄露细节
-        _night_event_public = {
-            "night_kill": {"type": "night_kill", "data": {"round": round_number}},
-            "night_verify": {"type": "night_verify", "data": {"round": round_number}},
-            "night_save": {"type": "night_save", "data": {"round": round_number}},
-            "night_poison": {"type": "night_poison", "data": {"round": round_number}},
-            "night_witch_skip": {"type": "night_save", "data": {"round": round_number}},
-            "night_settle": None,  # 不广播夜晚结算细节，死亡信息由白天 death_announce 公布
-        }
-
-        if phase == "night" and event_type in _night_event_public:
-            public_msg = _night_event_public[event_type]
-            if public_msg is not None:
-                await ws_manager.broadcast(game_id, public_msg)
-            # night_settle 直接不广播
-        else:
-            # 非夜晚事件正常广播
-            ws_message = {
-                "type": event_type,
-                "data": {"round": round_number, "seat": seat_number, **(event_data or {})},
-            }
-            await ws_manager.broadcast(game_id, ws_message)
-    except Exception as e:
-        logger.debug(f"[EventBus] WebSocket 广播失败: {e}")
+    await broadcast_persisted_event(event)
 
 
 async def save_speech(game_id: str, round_number: int, seat_number: int, content: str, is_pk: bool = False):

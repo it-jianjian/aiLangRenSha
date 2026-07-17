@@ -60,6 +60,8 @@ class PlayerRole:
     VILLAGER = "villager"   # 村民：无技能，靠推理和投票参与
     SEER = "seer"           # 预言家：夜晚查验一名玩家是狼人还是好人
     WITCH = "witch"         # 女巫：拥有解药和毒药，每晚只能用一种
+    HUNTER = "hunter"       # 猎人：狼杀或放逐死亡时可带走一人
+    GUARD = "guard"         # 守卫：每夜守护一名玩家，不能连续守同一人
 
 
 class PlayerType:
@@ -87,6 +89,9 @@ class EventType:
     NIGHT_SAVE = "night_save"           # 女巫使用解药
     NIGHT_POISON = "night_poison"       # 女巫使用毒药
     NIGHT_SETTLE = "night_settle"       # 夜晚结算（综合判定死亡名单）
+    NIGHT_GUARD = "night_guard"
+    HUNTER_REVENGE = "hunter_revenge"
+    HUNTER_SHOT = "hunter_shot"
 
     # ─── 白天事件 ───
     DEATH_ANNOUNCE = "death_announce"   # 公布夜晚死亡信息
@@ -125,6 +130,11 @@ class Game(Base):
     total_rounds = Column(Integer, nullable=False, default=0, comment="已完成的回合数")
     human_player_id = Column(String(36), nullable=True, comment="人类玩家ID（仅混合模式）")
     config_json = Column(Text, nullable=False, default="{}", comment="JSON格式配置，如模型名、温度等")
+    player_count = Column(Integer, nullable=False, default=6)
+    roster_type = Column(String(16), nullable=False, default="official")
+    roster_json = Column(Text, nullable=False, default='{"werewolf":2,"villager":2,"seer":1,"witch":1,"hunter":0,"guard":0}')
+    roster_locked_at = Column(DateTime, nullable=True)
+    owner_token_hash = Column(String(128), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now(), comment="创建时间")
     started_at = Column(DateTime, nullable=True, comment="开始时间")
     finished_at = Column(DateTime, nullable=True, comment="结束时间")
@@ -168,6 +178,7 @@ class GamePlayer(Base):
     death_phase = Column(String(8), nullable=True, comment="死亡阶段: night/day")
     death_reason = Column(String(32), nullable=True, comment="死因: killed_by_werewolf/poisoned/voted_out")
     ai_persona = Column(String(64), nullable=True, comment="AI 人设标识，如'冷静分析师'，影响 Prompt 风格")
+    access_token_hash = Column(String(128), nullable=True, comment="人类玩家一次性访问凭据摘要")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -201,6 +212,9 @@ class GameRound(Base):
     witch_action = Column(String(16), nullable=True, comment="女巫行动: save(解药)/poison(毒药)/none(不用)")
     witch_target_seat = Column(Integer, nullable=True, comment="女巫毒药目标（仅 poison 时有值）")
     night_deaths_json = Column(Text, nullable=True, comment="夜晚死亡列表 JSON")
+    guard_target_seat = Column(Integer, nullable=True)
+    hunter_shot_seat = Column(Integer, nullable=True)
+    hunter_shot_trigger = Column(String(32), nullable=True)
 
     # ─── 遗言标记 ───
     # PRD 规则：首夜死亡无遗言，第二夜起有遗言

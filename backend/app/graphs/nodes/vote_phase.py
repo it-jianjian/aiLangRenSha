@@ -22,6 +22,8 @@ import logging
 
 from app.graphs.state import GameFlowState
 from app.graphs.event_bus import (
+    broadcast_persisted_event,
+    create_game_event,
     record_event,
     save_speech,
     get_alive_players,
@@ -29,10 +31,13 @@ from app.graphs.event_bus import (
 )
 from app.graphs.nodes.agent_nodes import call_agent_villager_vote, call_agent_villager_speech, call_agent_last_words
 from app.services.human_action_bridge import human_bridge
+from app.models.game import PlayerRole
+from app.services.game_rules import can_hunter_shoot
 
 logger = logging.getLogger(__name__)
 
 AI_ACTION_DELAY = 0.8  # 投票间隔（秒）
+HUMAN_LAST_WORDS_TIMEOUT_SECONDS = 60
 
 
 async def day_vote_node(state: GameFlowState) -> dict:
@@ -62,7 +67,8 @@ async def day_vote_node(state: GameFlowState) -> dict:
         if player["player_type"] == "human":
             action = await human_bridge.wait_for_action(
                 state["game_id"], "vote",
-                {"seat_number": player["seat_number"], "player_name": player["player_name"], "role": player.get("role")},
+                {"seat_number": player["seat_number"], "player_name": player["player_name"], "role": player.get("role"),
+                 "phase": "day", "allowed_target_seats": other_seats, "empty_target_actions": ["vote"]},
             )
             target = action.get("target_seat")
         else:
@@ -131,7 +137,14 @@ async def day_vote_result_node(state: GameFlowState) -> dict:
             state["game_id"], state["current_round"], "day", "pk_announce",
             event_data={"tied_seats": top_seats},
         )
-        return {"eliminated_seat": None, "is_pk": True, "pk_seats": top_seats}
+        # 保留首轮投票（day_pk_node 返回重投结果时会覆盖 state["votes"]），
+        # 供 night_start 摘要与 AI 跨轮记忆使用。
+        return {
+            "eliminated_seat": None,
+            "is_pk": True,
+            "pk_seats": top_seats,
+            "pre_pk_votes": dict(votes),
+        }
 
 
 async def day_pk_node(state: GameFlowState) -> dict:
@@ -147,6 +160,7 @@ async def day_pk_node(state: GameFlowState) -> dict:
     PRD 规则：PK 后再次平票 → 本轮无人淘汰（平安日）
     """
     pk_seats = state["pk_seats"]
+    pk_speeches: list[dict] = []
 
     # ─── PK 发言 ───
     for seat in sorted(pk_seats):
@@ -168,6 +182,7 @@ async def day_pk_node(state: GameFlowState) -> dict:
             state["game_id"], state["current_round"], "day", "pk_speech",
             seat_number=seat, event_data={"content": content},
         )
+        pk_speeches.append({"seat": seat, "content": content})
         logger.info(f"[PK] {seat}号 PK 发言: {content[:40]}...")
 
     # ─── PK 重投（非 PK 玩家投票，只能在 PK 候选人中选择） ───
@@ -183,11 +198,14 @@ async def day_pk_node(state: GameFlowState) -> dict:
         if voter["player_type"] == "human":
             action = await human_bridge.wait_for_action(
                 state["game_id"], "vote",
-                {"seat_number": voter["seat_number"], "player_name": voter["player_name"], "role": voter.get("role")},
+                {"seat_number": voter["seat_number"], "player_name": voter["player_name"], "role": voter.get("role"),
+                 "phase": "day", "allowed_target_seats": pk_seats, "empty_target_actions": ["vote"]},
             )
             target = action.get("target_seat")
         else:
-            target = call_agent_villager_vote(state, voter)  # 只能投 PK 候选人
+            # 限定 AI 只能投 PK 候选人（scoped_state 注入 allowed_target_seats）
+            scoped_state = {**state, "allowed_target_seats": list(pk_seats)}
+            target = call_agent_villager_vote(scoped_state, voter)
 
         if target is not None and target not in pk_seats:
             target = None
@@ -212,18 +230,18 @@ async def day_pk_node(state: GameFlowState) -> dict:
 
     if not tally:
         logger.info("[PK] PK 重投全部弃票，平安日")
-        return {"eliminated_seat": None, "votes": pk_votes}
+        return {"eliminated_seat": None, "votes": pk_votes, "pk_speeches": pk_speeches}
 
     max_votes = max(tally.values())
     top_seats = [seat for seat, count in tally.items() if count == max_votes]
 
     if len(top_seats) == 1:
         logger.info(f"[PK] PK 结果: {top_seats[0]}号被淘汰")
-        return {"eliminated_seat": top_seats[0], "votes": pk_votes}
+        return {"eliminated_seat": top_seats[0], "votes": pk_votes, "pk_speeches": pk_speeches}
     else:
         # 再次平票 → 平安日
         logger.info(f"[PK] PK 再次平票: {top_seats}，平安日")
-        return {"eliminated_seat": None, "votes": pk_votes}
+        return {"eliminated_seat": None, "votes": pk_votes, "pk_speeches": pk_speeches}
 
 
 async def day_eliminate_node(state: GameFlowState) -> dict:
@@ -251,21 +269,34 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
     from sqlalchemy import select
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(GamePlayer).where(
-                GamePlayer.game_id == state["game_id"],
-                GamePlayer.seat_number == seat,
-            )
+        eliminate_event = create_game_event(
+            state["game_id"], state["current_round"], "day", "eliminate",
+            seat_number=seat,
+            event_data={"is_pk": state.get("is_pk", False)},
         )
-        player_db = result.scalar_one_or_none()
-        if player_db:
-            player_db.is_alive = False
-            player_db.death_round = state["current_round"]
-            player_db.death_phase = "day"
-            player_db.death_reason = "voted_out"
-        await session.commit()
+        try:
+            result = await session.execute(
+                select(GamePlayer).where(
+                    GamePlayer.game_id == state["game_id"],
+                    GamePlayer.seat_number == seat,
+                )
+            )
+            player_db = result.scalar_one_or_none()
+            if player_db:
+                player_db.is_alive = False
+                player_db.death_round = state["current_round"]
+                player_db.death_phase = "day"
+                player_db.death_reason = "voted_out"
+            session.add(eliminate_event)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
-    # ─── 遗言 ───
+    # 只有死亡与事件原子提交成功后才向客户端广播。
+    await broadcast_persisted_event(eliminate_event)
+
+    # ─── 遗言（有界等待，超时按沉默继续猎人/胜负/下一轮） ───
     player = next(p for p in state["players"] if p["seat_number"] == seat)
     await asyncio.sleep(AI_ACTION_DELAY)
 
@@ -273,21 +304,26 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
         action = await human_bridge.wait_for_action(
             state["game_id"], "last_words",
             {"seat_number": player["seat_number"], "player_name": player["player_name"], "role": player.get("role")},
+            timeout_seconds=HUMAN_LAST_WORDS_TIMEOUT_SECONDS,
         )
-        content = action.get("content", "（沉默）")
+        content = action.get("content", "（遗言超时，视为沉默）")
     else:
         content = call_agent_last_words(state, player)
 
     await save_speech(state["game_id"], state["current_round"], seat, content, is_pk=False)
     await record_event(
-        state["game_id"], state["current_round"], "day", "eliminate",
+        state["game_id"], state["current_round"], "day", "last_words",
         seat_number=seat,
-        event_data={"content": content, "is_pk": state.get("is_pk", False)},
+        event_data={"content": content},
     )
 
     logger.info(f"[Eliminate] {seat}号({player['player_name']})被淘汰，遗言: {content[:40]}...")
 
-    return {"players": players}
+    pending_hunter_shot = None
+    if player.get("role") in ("hunter", PlayerRole.HUNTER) and can_hunter_shoot("voted_out"):
+        pending_hunter_shot = {"seat_number": seat, "trigger": "voted_out", "phase": "day"}
+
+    return {"players": players, "pending_hunter_shot": pending_hunter_shot, "post_victory_route": "after_day"}
 
 
 async def day_end_node(state: GameFlowState) -> dict:

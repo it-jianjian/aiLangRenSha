@@ -104,6 +104,45 @@ class TestPublicInfo:
         for p in result["players"]:
             assert "role" not in p, f"玩家 {p['seat_number']} 的角色不应被暴露"
 
+    def test_filter_context_rejects_forged_role_for_real_seat(self):
+        """调用方传入的 role 必须与 seat 的真实角色一致，防止越权过滤。"""
+        state = _make_game_state()
+
+        with pytest.raises(ValueError, match="真实角色"):
+            filter_context(state, 5, "werewolf", "kill")
+
+    def test_guard_context_contains_only_guard_contract_without_wolf_or_witch_info(self):
+        """守卫上下文包含候选与上夜目标，但不泄露其他角色私密字段。"""
+        state = _make_game_state()
+        state["players"].append({"seat_number": 7, "player_name": "AI-7", "player_type": "ai", "role": "guard", "is_alive": True})
+        state["guard_last_target"] = 3
+        state["allowed_target_seats"] = [1, 2, 5, 6, 7]
+
+        result = filter_context(state, 7, "guard", "guard")
+
+        assert result["guard_last_target"] == 3
+        assert result["allowed_target_seats"] == [1, 2, 5, 6, 7]
+        assert "werewolf_companions" not in result
+        assert "seer_results" not in result
+        assert "witch_save_used" not in result
+
+    def test_hunter_context_contains_trigger_skip_and_allowed_targets_only(self):
+        """猎人上下文包含触发原因、可跳过与合法目标，不泄露守卫/女巫/狼人私密信息。"""
+        state = _make_game_state()
+        state["players"].append({"seat_number": 7, "player_name": "AI-7", "player_type": "ai", "role": "hunter", "is_alive": False})
+        state["pending_hunter_shot"] = {"seat_number": 7, "trigger": "voted_out"}
+        state["allowed_target_seats"] = [1, 2, 3, 5, 6]
+        state["can_skip"] = True
+
+        result = filter_context(state, 7, "hunter", "hunter_shoot")
+
+        assert result["hunter_can_shoot"] is True
+        assert result["hunter_trigger"] == "voted_out"
+        assert result["can_skip"] is True
+        assert result["allowed_target_seats"] == [1, 2, 3, 5, 6]
+        assert "guard_last_target" not in result
+        assert "werewolf_companions" not in result
+
 
 # ================================================================
 # 狼人专属信息
@@ -266,3 +305,30 @@ class TestOutputSanitization:
         # 4号已死，所以存活座位号应排除4
         assert 4 not in result["alive_seats"]
         assert 1 in result["alive_seats"]
+
+
+# ================================================================
+# 平票 PK 状态（公开信息）
+# 修复“只记得最终投票，不记得平票” bug
+# ================================================================
+
+class TestPkVisibility:
+    """测试平票 PK 状态作为公开信息对所有人可见"""
+
+    def test_pk_state_visible_to_all_roles(self):
+        """is_pk / pk_seats 应作为公开信息对所有角色可见。"""
+        state = _make_game_state()
+        state["is_pk"] = True
+        state["pk_seats"] = [2, 5]
+
+        for seat, role in [(1, "werewolf"), (3, "villager"), (5, "seer"), (6, "witch")]:
+            result = filter_context(state, seat, role, "vote")
+            assert result["is_pk"] is True
+            assert result["pk_seats"] == [2, 5]
+
+    def test_no_pk_defaults_to_false(self):
+        """未发生 PK 时 is_pk 应为 False，pk_seats 为空。"""
+        state = _make_game_state()
+        result = filter_context(state, 3, "villager", "vote")
+        assert result["is_pk"] is False
+        assert result["pk_seats"] == []

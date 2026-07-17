@@ -12,8 +12,10 @@
 后续如需加入重试循环或条件分支，可升级为 LangGraph 子图。
 """
 
+import json
 import logging
 import random
+import threading
 import time
 from typing import Any, Optional
 
@@ -25,6 +27,85 @@ from app.agent.decision_parser import parse_decision, validate_decision
 from app.agent.llm import create_llm, MockWerewolfLLM
 
 logger = logging.getLogger(__name__)
+
+# ─── 同步引擎单例（用于 AgentLog 持久化） ───────────────────
+_sync_engine = None
+
+
+def _get_sync_engine():
+    """获取同步 SQLAlchemy 引擎，从异步 URL 转换而来。
+
+    AgentLog 持久化在同步上下文中执行（run_agent 是同步函数），
+    因此需要一个同步引擎来写入数据库。
+    """
+    global _sync_engine
+    if _sync_engine is not None:
+        return _sync_engine
+
+    from app.config import get_settings
+    settings = get_settings()
+    # 将 async URL 转为 sync URL
+    sync_url = settings.database_url.replace("+aiosqlite", "")
+    from sqlalchemy import create_engine
+    _sync_engine = create_engine(
+        sync_url,
+        connect_args={"check_same_thread": False} if "sqlite" in sync_url else {},
+    )
+    return _sync_engine
+
+
+def _persist_agent_log(
+    game_id: str,
+    round_number: int,
+    seat_number: int,
+    action_type: str,
+    filtered_context: dict[str, Any],
+    prompt_messages: list,
+    llm_raw_output: str | None,
+    parsed_decision: dict[str, Any] | None,
+    is_fallback: bool,
+    latency_ms: int,
+) -> None:
+    """将 AI 决策审计日志持久化到 agent_logs 表。
+
+    记录过滤后上下文、实际 Prompt、LLM 原始输出、解析结果和 fallback 标记。
+    通过后台守护线程执行，不阻塞事件循环。
+    """
+    # 在后台守护线程中执行同步 DB 写，避免阻塞 asyncio 事件循环
+    def _write_log():
+        try:
+            from app.models.game import AgentLog
+            from sqlalchemy.orm import Session
+
+            engine = _get_sync_engine()
+
+            # 将 LangChain 消息列表序列化为文本
+            prompt_text = "\n\n".join(
+                f"[{type(m).__name__}] {m.content}"
+                for m in prompt_messages
+                if hasattr(m, "content")
+            )
+
+            log_entry = AgentLog(
+                game_id=game_id,
+                round_number=round_number,
+                seat_number=seat_number,
+                action_type=action_type,
+                context_json=json.dumps(filtered_context, ensure_ascii=False, default=str),
+                prompt_text=prompt_text,
+                llm_raw_output=llm_raw_output,
+                parsed_decision=json.dumps(parsed_decision, ensure_ascii=False, default=str) if parsed_decision else None,
+                is_fallback=is_fallback,
+                latency_ms=latency_ms,
+            )
+
+            with Session(engine) as session:
+                session.add(log_entry)
+                session.commit()
+        except Exception as e:
+            logger.warning(f"[Agent] AgentLog 持久化失败（不影响主链）: {e}")
+
+    threading.Thread(target=_write_log, daemon=True).start()
 
 
 # ─── Agent 状态类型（字典约定） ──────────────────────────
@@ -114,14 +195,42 @@ def run_agent(state: AgentState) -> dict[str, Any]:
         alive_seats=alive_seats,
         own_seat=seat,
         werewolf_seats=all_werewolf_seats if action_type == "kill" else None,
+        allowed_target_seats=filtered.get("allowed_target_seats"),
+        can_skip=bool(filtered.get("can_skip", False)),
     )
 
     if not valid:
         logger.warning(f"[Agent] {seat}号 决策不合法({reason})，降级随机")
         is_fallback = True
         parsed = _random_decision(action_type, filtered, seat)
+        fallback_valid, fallback_reason = validate_decision(
+            decision=parsed.get("decision"),
+            action_type=action_type,
+            alive_seats=alive_seats,
+            own_seat=seat,
+            werewolf_seats=all_werewolf_seats if action_type == "kill" else None,
+            allowed_target_seats=filtered.get("allowed_target_seats"),
+            can_skip=bool(filtered.get("can_skip", False)),
+        )
+        if not fallback_valid:
+            logger.warning(f"[Agent] {seat}号 fallback 仍不合法({fallback_reason})，强制空决策")
+            parsed = {"decision": None, "reasoning": f"[降级] 无合法目标：{fallback_reason}"}
 
     latency_ms = int((time.monotonic() - start_time) * 1000)
+
+    # ─── 持久化 AgentLog 审计记录 ───
+    _persist_agent_log(
+        game_id=game_context.get("game_id", ""),
+        round_number=game_context.get("current_round", 0),
+        seat_number=seat,
+        action_type=action_type,
+        filtered_context=filtered,
+        prompt_messages=messages,
+        llm_raw_output=llm_text,
+        parsed_decision=parsed,
+        is_fallback=is_fallback,
+        latency_ms=latency_ms,
+    )
 
     result = {
         "decision": parsed.get("decision"),
@@ -159,26 +268,34 @@ def _random_decision(
         {"decision": 随机值, "reasoning": "[降级] 随机决策"}
     """
     alive_seats = context.get("alive_seats", [])
+    allowed_targets = list(context.get("allowed_target_seats") or [])
     other_seats = [s for s in alive_seats if s != own_seat]
 
     match action_type:
         case "kill":
             # 排除狼人同伴
             companions = context.get("werewolf_companions", [])
-            targets = [s for s in other_seats if s not in companions]
-            decision = random.choice(targets) if targets else None
+            targets = allowed_targets or [s for s in other_seats if s not in companions]
+            decision = targets[0] if targets else None
         case "verify":
-            decision = random.choice(other_seats) if other_seats else None
+            targets = allowed_targets or other_seats
+            decision = targets[0] if targets else None
         case "save":
             decision = random.choice([True, False])
         case "poison":
-            decision = random.choice(other_seats + [None]) if other_seats else None
+            targets = allowed_targets or other_seats
+            decision = targets[0] if targets else None
         case "speech":
             decision = f"（{own_seat}号自动发言：目前信息有限，我继续观察。）"
         case "vote":
-            decision = random.choice(other_seats + [None]) if other_seats else None
+            targets = allowed_targets or other_seats
+            decision = targets[0] if targets else None
         case "last_words":
             decision = f"（{own_seat}号自动遗言：希望好人阵营能获胜。）"
+        case "guard":
+            decision = allowed_targets[0] if allowed_targets else None
+        case "hunter_shoot":
+            decision = allowed_targets[0] if allowed_targets else None
         case _:
             decision = None
 

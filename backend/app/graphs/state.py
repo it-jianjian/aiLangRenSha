@@ -56,6 +56,8 @@ class GameFlowState(TypedDict):
     werewolf_seats: list[int]         # 狼人座位号列表，如 [2, 5]
     seer_seat: Optional[int]          # 预言家座位号
     witch_seat: Optional[int]         # 女巫座位号
+    hunter_seat: Optional[int]
+    guard_seat: Optional[int]
 
     # ─── 回合信息 ───────────────────────────────────────────
     current_round: int                # 当前回合编号（从 1 开始，每轮白天结束后 +1）
@@ -67,12 +69,15 @@ class GameFlowState(TypedDict):
     night_seer_result: Optional[str]  # 查验结果："werewolf" / "villager"
     night_witch_action: str           # 女巫行动："save" / "poison" / "skip"
     night_witch_target: Optional[int] # 女巫毒药目标（仅 poison 时有值）
+    night_guard_target: Optional[int]
     night_deaths: list[int]           # 夜晚最终死亡的座位号列表
 
     # ─── 女巫药水状态（跨回合持久） ─────────────────────────
     # 解药和毒药各只能用一次（整局游戏内），这里跟踪是否已使用
     witch_save_used: bool             # 解药是否已使用
     witch_poison_used: bool           # 毒药是否已使用
+    guard_last_target: Optional[int]
+    pending_hunter_shot: Optional[int]
 
     # ─── 白天阶段临时数据 ───────────────────────────────────
     speeches: list[dict[str, Any]]    # 发言列表 [{"seat": int, "content": str}, ...]
@@ -82,6 +87,8 @@ class GameFlowState(TypedDict):
     eliminated_seat: Optional[int]    # 本轮被淘汰座位号
     is_pk: bool                       # 是否正在 PK（平票重投）
     pk_seats: list[int]               # PK 候选人座位号列表
+    pre_pk_votes: dict[int, Optional[int]]  # 平票首轮投票（仅 PK 轮有值，保留供 AI 跨轮记忆）
+    pk_speeches: list[dict[str, Any]]       # PK 环节发言 [{"seat": int, "content": str}]
 
     # ─── 胜负判定 ───────────────────────────────────────────
     game_over: bool                   # 游戏是否结束

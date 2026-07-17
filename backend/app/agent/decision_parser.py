@@ -92,6 +92,8 @@ def validate_decision(
     alive_seats: list[int],
     own_seat: int,
     werewolf_seats: Optional[list[int]] = None,
+    allowed_target_seats: Optional[list[int]] = None,
+    can_skip: bool = False,
 ) -> tuple[bool, str]:
     """校验决策是否合法
 
@@ -107,6 +109,9 @@ def validate_decision(
         - is_valid=True: 决策合法
         - is_valid=False, reason="原因": 决策不合法
     """
+
+    def _allowed_targets() -> list[int]:
+        return list(allowed_target_seats) if allowed_target_seats is not None else alive_seats
 
     # ─── kill: 击杀目标 ───
     if action_type == "kill":
@@ -168,6 +173,26 @@ def validate_decision(
             return False, "不能投自己"
         if decision not in alive_seats:
             return False, "目标不在存活玩家列表中"
+        return True, ""
+
+    # ─── guard: 守卫目标 ───
+    if action_type == "guard":
+        if not isinstance(decision, int):
+            return False, "守护目标必须是整数座位号"
+        if decision not in _allowed_targets():
+            return False, "目标不是服务端合法守护目标"
+        return True, ""
+
+    # ─── hunter_shoot: 猎人开枪 ───
+    if action_type == "hunter_shoot":
+        if decision is None:
+            return (True, "") if can_skip else (False, "猎人开枪目标不能为空")
+        if not isinstance(decision, int):
+            return False, "猎人开枪目标必须是整数座位号或 null"
+        if decision == own_seat:
+            return False, "不能带走自己"
+        if decision not in _allowed_targets():
+            return False, "目标不是服务端合法猎人目标"
         return True, ""
 
     # ─── last_words: 遗言 ───

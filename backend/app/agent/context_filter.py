@@ -44,6 +44,14 @@ def filter_context(
         - 函数是纯函数，不修改原始 state
     """
 
+    real_player = next((p for p in state.get("players", []) if p.get("seat_number") == seat_number), None)
+    if real_player is None:
+        raise ValueError(f"座位 {seat_number} 不存在，无法绑定真实角色")
+    real_role = real_player.get("role")
+    real_role_value = getattr(real_role, "value", real_role)
+    if real_role_value != role:
+        raise ValueError(f"调用角色与座位真实角色不一致：传入 {role}，真实角色 {real_role}")
+
     # ─── 公共信息（所有角色都可见） ─────────────────────────
     # 移除玩家字典中的 role 字段，只保留公开属性
     sanitized_players = []
@@ -70,6 +78,9 @@ def filter_context(
         "speeches": state.get("speeches", []),
         "votes": state.get("votes", {}),
         "eliminated_seat": state.get("eliminated_seat"),
+        # 平票 PK 状态（公开信息：pk_announce 事件会广播给所有人）
+        "is_pk": state.get("is_pk", False),
+        "pk_seats": state.get("pk_seats", []),
         # 夜晚死亡信息（白天公布后为公共信息）
         "night_deaths": state.get("night_deaths", []),
         # 跨轮历史（让 AI 能看到之前轮次的发言/投票/死亡）
@@ -77,6 +88,11 @@ def filter_context(
         # 当前决策类型（让 Agent 知道要做什么决策）
         "action_type": action_type,
     }
+
+    if action_type in {"kill", "verify", "poison", "guard", "hunter_shoot", "vote"}:
+        result["allowed_target_seats"] = list(state.get("allowed_target_seats", []))
+    if action_type in {"hunter_shoot", "vote"}:
+        result["can_skip"] = bool(state.get("can_skip", action_type == "vote"))
 
     # ─── 狼人专属信息 ───────────────────────────────────────
     if role == "werewolf":
@@ -93,7 +109,14 @@ def filter_context(
     # ─── 预言家专属信息 ─────────────────────────────────────
     if role == "seer":
         # 预言家的完整历史查验结果（跨轮累积）
-        result["seer_results"] = state.get("seer_history", [])
+        history = state.get("seer_history", [])
+        if not history and state.get("night_seer_target") is not None:
+            history = [{
+                "round": state.get("current_round", 0),
+                "target": state["night_seer_target"],
+                "result": state.get("night_seer_result"),
+            }]
+        result["seer_results"] = history
 
     # ─── 女巫专属信息 ───────────────────────────────────────
     if role == "witch":
@@ -104,5 +127,17 @@ def filter_context(
         # 被狼人击杀的玩家（女巫在夜晚行动时需要此信息来决定是否用解药）
         if action_type in ("save", "poison", "skip"):
             result["night_kill_target"] = state.get("night_kill_target")
+
+    if role == "guard":
+        result["guard_last_target"] = state.get("guard_last_target")
+
+    if role == "hunter":
+        pending = state.get("pending_hunter_shot")
+        if isinstance(pending, dict):
+            result["hunter_can_shoot"] = pending.get("seat_number") == seat_number
+            result["hunter_trigger"] = pending.get("trigger")
+        else:
+            result["hunter_can_shoot"] = pending == seat_number
+            result["hunter_trigger"] = state.get("hunter_trigger")
 
     return result

@@ -3,16 +3,26 @@
  *
  * 职责：展示历史对局的完整过程，支持逐步播放
  * 路由：/replay/:gameId
+ *
+ * 2.0 改进：
+ * - 顶部显示阵容计数摘要
+ * - 事件时间线按轮次/昼夜分组
+ * - 去除原始 JSON 展示，仅显示中文描述
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card, Button, Space, Slider, Tag, Typography, Spin, message } from 'antd'
 import { StepBackwardOutlined, StepForwardOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons'
 import { apiService } from '../services/api'
-import type { ReplayData, ReplayStep } from '../types'
+import type { ReplayData, ReplayStep, Roster } from '../types'
 
 const { Title, Text } = Typography
+
+// 角色中文映射
+const roleCN: Record<string, string> = {
+  werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫'
+}
 
 export default function ReplayPage() {
   const { gameId } = useParams<{ gameId: string }>()
@@ -43,6 +53,24 @@ export default function ReplayPage() {
     return () => clearTimeout(timer)
   }, [playing, currentStep, replay])
 
+  // 按轮次分组事件
+  const groupedSteps = useMemo(() => {
+    if (!replay) return []
+    const groups: { round: number; phase: string; steps: { step: ReplayStep; index: number }[] }[] = []
+    for (let i = 0; i < replay.steps.length; i++) {
+      const step = replay.steps[i]
+      const round = step.round ?? 0
+      const phase = step.phase || 'system'
+      let group = groups.find(g => g.round === round && g.phase === phase)
+      if (!group) {
+        group = { round, phase, steps: [] }
+        groups.push(group)
+      }
+      group.steps.push({ step, index: i })
+    }
+    return groups
+  }, [replay])
+
   if (loading) {
     return <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>
   }
@@ -65,16 +93,36 @@ export default function ReplayPage() {
     return '系统'
   }
 
+  // 阵容计数摘要
+  const rosterSummary = (roster: Roster) => {
+    return Object.entries(roster)
+      .filter(([, count]) => count > 0)
+      .map(([role, count]) => `${count} ${roleCN[role] || role}`)
+      .join('、')
+  }
+
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', padding: '20px' }}>
-      <Title level={3}>对局回放</Title>
+      <Title level={3}>对局完整回放</Title>
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Tag>{replay.player_count} 人局</Tag>
+          <Tag color={replay.winner === 'werewolf' ? 'red' : 'blue'}>
+            {replay.winner === 'werewolf' ? '狼人胜利' : '好人胜利'}
+          </Tag>
+          <Text>胜负原因：{replay.end_reason}</Text>
+          {rosterSummary(replay.roster) && (
+            <Text type="secondary">阵容：{rosterSummary(replay.roster)}</Text>
+          )}
+        </Space>
+      </Card>
 
       {/* 角色映射 */}
       <Card size="small" title="角色揭示" style={{ marginBottom: 16 }}>
         <Space wrap>
           {Object.entries(replay.role_mapping).map(([seat, role]) => (
             <Tag key={seat} color={role === 'werewolf' ? 'red' : role === 'seer' ? 'purple' : role === 'witch' ? 'green' : 'blue'}>
-              {seat}号: {role === 'werewolf' ? '狼人' : role === 'seer' ? '预言家' : role === 'witch' ? '女巫' : '村民'}
+              {seat}号: {roleCN[role] || role}
             </Tag>
           ))}
         </Space>
@@ -93,13 +141,11 @@ export default function ReplayPage() {
         {currentEvent && (
           <div>
             <Text strong>步骤 {currentStep + 1} / {replay.total_steps}</Text>
+            {currentEvent.round != null && (
+              <Text type="secondary"> · 第 {currentEvent.round} 轮</Text>
+            )}
             <br /><br />
             <Text>{currentEvent.description}</Text>
-            {currentEvent.event_data && (
-              <pre style={{ marginTop: 8, background: '#f5f5f5', padding: 12, borderRadius: 8, fontSize: 12 }}>
-                {JSON.stringify(currentEvent.event_data, null, 2)}
-              </pre>
-            )}
           </div>
         )}
       </Card>
@@ -143,27 +189,41 @@ export default function ReplayPage() {
         </Space>
       </Card>
 
-      {/* 事件时间线 */}
+      {/* 事件时间线 — 按轮次/昼夜分组 */}
       <Card title="事件时间线" style={{ marginTop: 16 }}>
-        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-          {replay.steps.map((step, i) => (
-            <div
-              key={i}
-              style={{
-                padding: '6px 12px',
+        <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+          {groupedSteps.map((group, gi) => (
+            <div key={gi} style={{ marginBottom: 12 }}>
+              <div style={{
+                padding: '4px 12px',
+                background: group.phase === 'night' ? 'rgba(50,50,150,0.1)' : 'rgba(200,180,50,0.1)',
+                borderRadius: 6,
                 marginBottom: 4,
-                borderRadius: 4,
-                background: i === currentStep ? '#e6f4ff' : '#f5f5f5',
-                cursor: 'pointer',
-              }}
-              onClick={() => { setCurrentStep(i); setPlaying(false) }}
-            >
-              <Tag color={phaseColor(step.phase)} style={{ marginRight: 8 }}>
-                {phaseLabel(step.phase)}
-              </Tag>
-              <Text type={i === currentStep ? undefined : 'secondary'}>
-                {step.description}
-              </Text>
+                fontWeight: 'bold',
+              }}>
+                <Tag color={phaseColor(group.phase)} style={{ marginRight: 8 }}>
+                  {phaseLabel(group.phase)}
+                </Tag>
+                第 {group.round} 轮
+              </div>
+              {group.steps.map(({ step, index }) => (
+                <div
+                  key={index}
+                  style={{
+                    padding: '6px 12px 6px 24px',
+                    marginBottom: 2,
+                    borderRadius: 4,
+                    background: index === currentStep ? '#e6f4ff' : '#f5f5f5',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                  onClick={() => { setCurrentStep(index); setPlaying(false) }}
+                >
+                  <Text type={index === currentStep ? undefined : 'secondary'}>
+                    {step.description}
+                  </Text>
+                </div>
+              ))}
             </div>
           ))}
         </div>

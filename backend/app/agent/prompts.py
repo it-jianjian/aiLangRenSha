@@ -64,6 +64,20 @@ def get_role_strategy(role: str) -> str:
             "- 每晚只能使用一种药，需要根据局势判断优先级\n"
             "- 观察夜晚被击杀的玩家身份模式，推断狼人策略"
         ),
+        "guard": (
+            "你是守卫。你每晚可以守护一名存活玩家，但不能连续两晚守护同一目标。\n"
+            "策略要点：\n"
+            "- 优先保护你认为关键的好人角色或最可能被刀的玩家\n"
+            "- 严格从系统给出的合法目标集合中选择，不要选择上夜守护目标\n"
+            "- 不要泄露守卫身份，白天发言仍要谨慎"
+        ),
+        "hunter": (
+            "你是猎人。当你因狼人击杀或白天放逐死亡时，可以选择开枪带走一名存活玩家，也可以不开枪。\n"
+            "策略要点：\n"
+            "- 只在有较高把握时开枪，避免误伤好人\n"
+            "- 根据触发原因、发言和投票信息选择最可疑目标\n"
+            "- 如果信息不足，可以选择 null 表示跳过不开枪"
+        ),
     }
     return strategies.get(role, "请根据你的角色做出合理决策。")
 
@@ -123,6 +137,20 @@ def get_decision_instruction(action_type: str) -> str:
             "请以 JSON 格式输出你的遗言：\n"
             '{"decision": "你的遗言文本", "reasoning": "你的遗言策略"}\n'
             "遗言会公开展示，可以用来传递重要信息。"
+        ),
+        "guard": (
+            "【你的决策】你是守卫，请选择本夜守护目标。\n"
+            "只能从【当前局势】中的 allowed_target_seats 里选择，不能连续守护上一夜目标。\n"
+            "请以 JSON 格式输出你的决策：\n"
+            '{"decision": 座位号(整数), "reasoning": "你的推理过程"}\n'
+            "例如：{\"decision\": 3, \"reasoning\": \"3号可能是关键好人且今晚可能被刀\"}"
+        ),
+        "hunter_shoot": (
+            "【你的决策】你是猎人，已触发开枪机会。\n"
+            "只能从【当前局势】中的 allowed_target_seats 里选择目标；decision 为 null 表示跳过不开枪。\n"
+            "请以 JSON 格式输出你的决策：\n"
+            '{"decision": 座位号(整数)或null, "reasoning": "你的推理过程"}\n'
+            "例如：{\"decision\": null, \"reasoning\": \"信息不足，避免误伤好人\"}"
         ),
     }
     return instructions.get(action_type, f"请做出 {action_type} 决策。")
@@ -195,6 +223,8 @@ def _role_name_cn(role: str) -> str:
         "villager": "村民",
         "seer": "预言家",
         "witch": "女巫",
+        "hunter": "猎人",
+        "guard": "守卫",
     }
     return names.get(role, role)
 
@@ -208,6 +238,11 @@ def _format_game_context(context: dict[str, Any]) -> str:
 
     if "alive_seats" in context:
         parts.append(f"存活玩家: {context['alive_seats']}")
+
+    if "allowed_target_seats" in context:
+        parts.append(f"服务端合法目标 allowed_target_seats: {context['allowed_target_seats']}")
+    if context.get("can_skip"):
+        parts.append("本次行动允许 decision 为 null 表示跳过。")
 
     # 狼人同伴
     if "werewolf_companions" in context:
@@ -228,6 +263,11 @@ def _format_game_context(context: dict[str, Any]) -> str:
     # 被击杀者（女巫视角）
     if "night_kill_target" in context:
         parts.append(f"今晚被狼人击杀的是: {context['night_kill_target']}号")
+
+    if "guard_last_target" in context:
+        parts.append(f"守卫上一夜守护目标: {context['guard_last_target']}号")
+    if "hunter_trigger" in context and context.get("hunter_can_shoot"):
+        parts.append(f"猎人开枪触发原因: {context.get('hunter_trigger')}")
 
     # ★★★ 昨晚情况（最关键的信息！AI 必须知道昨晚发生了什么）★★★
     # 只在白天决策时展示（发言/投票/遗言），夜晚行动时不展示（避免混淆“还未发生”和“平安夜”）
@@ -260,11 +300,26 @@ def _format_game_context(context: dict[str, Any]) -> str:
                 for s in hist_speeches:
                     # 不截断，完整展示
                     parts.append(f"    {s['seat']}号: {s['content']}")
-            # 投票
+            # 平票 PK 详情（让 AI 记忆上轮出现过平票、两人 battle 及当时投票）
+            # 放在重投前，顺序：平票宣布 → 首轮投票 → PK 发言 → PK 重投
+            if hist.get("is_pk"):
+                pk_seats = hist.get("pk_seats", [])
+                parts.append(f"  ⚖️ 平票: {'、'.join(f'{s}号' for s in pk_seats)} 并列最高票进入 PK")
+                pre_pk = hist.get("pre_pk_votes", {})
+                if pre_pk:
+                    pre_lines = [f"    {v}号→{t}号" if t else f"    {v}号→弃票" for v, t in pre_pk.items()]
+                    parts.append("  首轮投票(平票):\n" + "\n".join(pre_lines))
+                pk_sp = hist.get("pk_speeches", [])
+                if pk_sp:
+                    parts.append("  PK 发言:")
+                    for s in pk_sp:
+                        parts.append(f"    {s['seat']}号: {s['content']}")
+            # 投票（PK 轮为重投结果）
             hist_votes = hist.get("votes", {})
             if hist_votes:
+                vote_label = "PK 重投" if hist.get("is_pk") else "投票"
                 vote_lines = [f"    {v}号→{t}号" if t else f"    {v}号→弃票" for v, t in hist_votes.items()]
-                parts.append(f"  投票:\n" + "\n".join(vote_lines))
+                parts.append(f"  {vote_label}:\n" + "\n".join(vote_lines))
             # 淘汰
             elim = hist.get("eliminated_seat")
             if elim is not None:
@@ -283,6 +338,10 @@ def _format_game_context(context: dict[str, Any]) -> str:
     if votes:
         vote_parts = [f"{v}号→{t}号" if t else f"{v}号→弃票" for v, t in votes.items()]
         parts.append(f"本轮投票: {', '.join(vote_parts)}")
+
+    # 当前轮平票 PK 指示
+    if context.get("is_pk"):
+        parts.append(f"当前处于平票 PK 重投环节，PK 候选人: {context.get('pk_seats')}号")
 
     # 玩家状态概览
     players = context.get("players", [])

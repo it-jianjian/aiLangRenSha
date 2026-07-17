@@ -13,7 +13,7 @@
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -141,6 +141,7 @@ class SpeechRequest(BaseModel):
         default=False,
         description="是否为 PK 环节发言（平票后的额外发言）"
     )
+    action_type: Literal["speech", "last_words"] = "speech"
 
 
 class VoteRequest(BaseModel):
@@ -162,6 +163,7 @@ class VoteRequest(BaseModel):
 class ReplayStep(BaseModel):
     """回放步骤（一个游戏事件对应一步）"""
     step_index: int                             # 步骤序号（从 0 开始）
+    round: Optional[int] = None                 # 所属回合号（用于前端按轮次分组）
     phase: str                                  # 所属阶段（night/day/system）
     event_type: str                             # 事件类型（对应 EventType 枚举）
     description: str                            # 人类可读的事件描述
@@ -202,7 +204,7 @@ class WSMessage(BaseModel):
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -229,6 +231,15 @@ class CreateGameRequest(BaseModel):
     mode: str = Field(description="游戏模式: pure_ai / mixed")
     player_name: Optional[str] = Field(default=None, max_length=32, description="人类玩家名称(混合模式必填)")
     config: GameConfig = Field(default_factory=GameConfig)
+    player_count: int = Field(default=6)
+    roster_type: str = Field(default="official")
+    roster: Optional[dict[str, int]] = None
+
+
+class RosterUpdateRequest(BaseModel):
+    player_count: int
+    roster_type: str
+    roster: dict[str, int]
 
 
 class PlayerInfo(BaseModel):
@@ -262,6 +273,10 @@ class GameDetail(BaseModel):
     end_reason: Optional[str] = None
     players: list[PlayerInfo]
     rounds: list[dict] = []
+    player_count: int = 6
+    roster_type: str = "official"
+    roster: dict[str, int] = {}
+    roster_locked: bool = False
 
 
 # ── 操作相关 ──────────────────────────────────────────────
@@ -276,6 +291,7 @@ class SpeechRequest(BaseModel):
     """发言请求"""
     content: str = Field(min_length=1, max_length=500, description="发言内容")
     is_pk: bool = False
+    action_type: Literal["speech", "last_words"] = "speech"
 
 
 class VoteRequest(BaseModel):
@@ -289,6 +305,7 @@ class VoteRequest(BaseModel):
 class ReplayStep(BaseModel):
     """回放步骤"""
     step_index: int
+    round: Optional[int] = None
     phase: str
     event_type: str
     description: str
@@ -301,6 +318,10 @@ class ReplayData(BaseModel):
     total_steps: int
     steps: list[ReplayStep]
     role_mapping: dict  # {seat: role}
+    player_count: int = 6
+    roster: dict[str, int] = {}
+    winner: Optional[str] = None
+    end_reason: Optional[str] = None
 
 
 # ── WebSocket 消息 ────────────────────────────────────────

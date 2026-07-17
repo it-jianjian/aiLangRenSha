@@ -10,6 +10,7 @@
 """
 
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,22 @@ async def lifespan(app: FastAPI):
     # run_sync() 把同步的 create_all 包装成异步执行
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # create_all 只负责空库建表；历史库字段升级由 Alembic 负责，失败则不接受流量。
+    from app.db.migrations import upgrade_database
+    await asyncio.to_thread(upgrade_database, settings.database_url)
+
+    # 游戏流程仅在进程内 asyncio task 中执行，重启后无法从安全检查点续跑。
+    # 显式终止遗留 playing 记录，避免它们永久占用唯一活动对局槽位。
+    from app.db.session import async_session_factory
+    from app.services.game_service import GameService
+    async with async_session_factory() as session:
+        terminated = await GameService(session).terminate_unrecoverable_playing_games()
+        await session.commit()
+    if terminated:
+        import logging
+        logging.getLogger(__name__).warning(
+            "启动时终止了 %s 个无法恢复的 playing 对局", terminated
+        )
 
     yield  # ← 应用在此处开始接受请求，关闭时继续执行下方
 
@@ -85,12 +102,51 @@ def create_app() -> FastAPI:
         连接地址: ws://host/ws/game/{game_id}
         消息格式: {"type": "事件类型", "data": {...}, "timestamp": "ISO8601"}
         """
+        # 所有连接先作为匿名观察者接入以接收公共事件。只有首帧认证成功后
+        # 才会绑定座位并投递私密身份；令牌绝不出现在 URL、日志或错误消息中。
+        #
+        # 关键修复：等待态（waiting）也允许绑定座位。前端在等待房间加载时即连
+        # 接 WS 并认证，若此时拒绝（旧逻辑要求 status==playing），连接会被
+        # 1008 关闭且前端不重连，导致开局后所有实时推送收不到、必须手动刷新。
+        # 等待态绑定后，对局启动时 _send_game_started 会向已绑定连接投递身份。
         await ws_manager.connect(websocket, game_id)
+        authenticated = False
         try:
             while True:
-                # 保持连接，等待客户端消息（如人类玩家操作指令）
-                await websocket.receive_text()
+                message_text = await websocket.receive_text()
+                if authenticated:
+                    continue
+
+                from app.api.ws_handler import extract_authentication_token, resolve_player_binding
+                from app.db.session import async_session_factory
+                player_token = extract_authentication_token(message_text)
+                if not player_token:
+                    await websocket.send_json({"type": "authentication_failed", "data": {"code": "invalid_authentication"}})
+                    await websocket.close(code=1008)
+                    return
+
+                async with async_session_factory() as session:
+                    binding = await resolve_player_binding(session, game_id, player_token)
+                if not binding:
+                    await websocket.send_json({"type": "authentication_failed", "data": {"code": "invalid_authentication"}})
+                    await websocket.close(code=1008)
+                    return
+
+                ws_manager.bind_player(websocket, game_id, binding["seat_number"])
+                authenticated = True
+                # 仅在对局进行中才立即投递身份；等待态绑定后由 _send_game_started 在开局时投递。
+                if binding["identity_sync_allowed"]:
+                    await ws_manager.send_to_seat(game_id, binding["seat_number"], {
+                        "type": "identity_sync",
+                        "data": {
+                            "seat": binding["seat_number"],
+                            "role": binding["role"],
+                            "werewolf_companions": binding["companions"],
+                        },
+                    })
         except WebSocketDisconnect:
+            pass
+        finally:
             ws_manager.disconnect(websocket, game_id)
 
     # ─── 健康检查接口 ────────────────────────────────────────
