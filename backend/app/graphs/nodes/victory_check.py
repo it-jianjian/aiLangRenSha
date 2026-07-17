@@ -117,10 +117,25 @@ async def game_over_node(state: GameFlowState) -> dict:
     """游戏结束节点
 
     职责：
+    - 如有未公布的夜晚死亡，先广播 death_announce（避免“游戏结束但不知道谁死了”）
     - 持久化游戏结果到 Game 表
-    - 记录 game_over 事件
-    - 日志输出最终结果
+    - 记录 game_over 事件（含胜利原因、最后死亡名单、全员身份揭晓）
     """
+    # ─── 如有未公布的夜晚死亡，先广播死亡信息 ───
+    night_deaths = state.get("night_deaths", [])
+    if night_deaths:
+        death_info = []
+        for seat in night_deaths:
+            p = next((pl for pl in state["players"] if pl["seat_number"] == seat), None)
+            if p:
+                death_info.append({"seat": seat, "name": p["player_name"]})
+        await record_event(
+            state["game_id"], state["current_round"], "day", "death_announce",
+            event_data={"deaths": death_info},
+        )
+        logger.info(f"[GameOver] 公布最后夜晚死亡: {night_deaths}")
+        await __import__("asyncio").sleep(0.3)  # 让前端有时间渲染死亡信息
+
     # ─── 持久化到数据库 ───
     from app.db.session import async_session_factory
     from app.models.game import Game, GameRound
@@ -152,6 +167,15 @@ async def game_over_node(state: GameFlowState) -> dict:
 
         await session.commit()
 
+    # ─── 胜利原因人类可读文本 ───
+    _reason_text = {
+        "all_werewolf_dead": "所有狼人已被淘汰",
+        "werewolf_dominant": "存活狼人数 ≥ 好人数",
+        "deadlock_3peace": "连续3天平安日",
+        "max_rounds": "超过最大轮数（10轮）",
+    }
+    reason_text = _reason_text.get(state["end_reason"], state["end_reason"] or "未知")
+
     # ─── 记录 game_over 事件 ───
     all_roles = {
         str(p["seat_number"]): {
@@ -161,12 +185,20 @@ async def game_over_node(state: GameFlowState) -> dict:
         }
         for p in state["players"]
     }
+
+    # 统计存活狼人/好人数
+    werewolf_count, good_count = _count_alive_by_faction(state["players"])
+
     await record_event(
         state["game_id"], state["current_round"], "system", "game_over",
         event_data={
             "winner": state["winner"],
             "end_reason": state["end_reason"],
+            "reason_text": reason_text,
             "total_rounds": state["current_round"],
+            "night_deaths": night_deaths,
+            "alive_werewolves": werewolf_count,
+            "alive_goods": good_count,
             "all_roles": all_roles,
         },
     )
@@ -175,6 +207,7 @@ async def game_over_node(state: GameFlowState) -> dict:
         f"[GameOver] 对局 {state['game_id']} 结束！"
         f" 胜方: {state['winner']} 原因: {state['end_reason']}"
         f" 总轮数: {state['current_round']}"
+        f" 最后死亡: {night_deaths}"
     )
 
     return {"status": "finished"}

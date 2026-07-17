@@ -126,6 +126,7 @@ export type WSMessageType =
   | 'pk_announce'
   | 'eliminate'
   | 'victory_check'
+  | 'game_over'
   | 'ai_thinking'
   | 'ai_reasoning'
   | 'error'

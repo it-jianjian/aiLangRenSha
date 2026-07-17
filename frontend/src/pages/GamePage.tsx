@@ -119,6 +119,9 @@ export default function GamePage() {
             store.setWinner(msg.data.winner)
           }
           break
+        case 'game_over':
+          store.setWinner(msg.data.winner)
+          break
         case 'human_action_prompt':
           // 轮到人类操作：显示操作提示
           store.setActionPrompt({
@@ -345,8 +348,29 @@ export default function GamePage() {
       'vote_result': `📊 投票结果: ${Object.entries(d.tally || {}).map(([k,v]: any) => `${k}号${v}票`).join('，') || '全部弃票'}`,
       'pk_announce': `⚖️ 平票！PK: ${d.tied_seats?.join('、')}号`,
       'eliminate': `❌ ${d.seat}号被淘汰`,
-      'victory_check': d.game_over ? `🏆 游戏结束！${d.winner === 'werewolf' ? '狼人' : '好人'}阵营胜利！` : null,
-      'game_over': `🏆 游戏结束 - ${d.winner === 'werewolf' ? '狼人' : '好人'}胜！`,
+      'victory_check': null,  // game_over 事件会展示完整信息，此处不重复
+      'game_over': (() => {
+        const winText = d.winner === 'werewolf' ? '狼人' : '好人'
+        const roleMap: Record<string, string> = { werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫' }
+        const lines: string[] = [`🏆 游戏结束 - ${winText}胜！`]
+        if (d.reason_text) lines.push(`📋 胜利原因: ${d.reason_text}`)
+        const nd = d.night_deaths
+        if (Array.isArray(nd) && nd.length > 0) lines.push(`💀 最后死亡: ${nd.map((s: any) => `${s}号`).join('、')}`)
+        if (d.alive_werewolves !== undefined && d.alive_goods !== undefined)
+          lines.push(`🐺 存活狼人: ${d.alive_werewolves} | 好人: ${d.alive_goods}`)
+        lines.push(`⏱️ 总轮数: ${d.total_rounds}`)
+        if (d.all_roles) {
+          lines.push('🎭 身份揭晓:')
+          const seats = Object.keys(d.all_roles).sort((a: string, b: string) => Number(a) - Number(b))
+          for (const seat of seats) {
+            const p = d.all_roles[seat]
+            const rname = roleMap[p.role] || p.role
+            const status = p.is_alive ? '存活' : '已淘汰'
+            lines.push(`  ${seat}号(${p.name}) - ${rname} ${status === '存活' ? '✓' : '✗'}`)
+          }
+        }
+        return lines.join('\n')
+      })(),
     }
 
     const text = textMap[msg.type]
