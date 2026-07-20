@@ -6,7 +6,7 @@
  *
  * 展示内容：
  * - 夜晚/白天阶段指示器（暗色/亮色主题）
- * - 6 个玩家座位卡（存活/淘汰状态、角色揭示）
+ * - 6/12 个玩家座位卡（存活/淘汰状态、角色揭示）
  * - 事件日志流（发言、死亡、投票、淘汰等所有事件）
  * - 操作面板（人类玩家发言/投票）
  * - 游戏结束结算面板
@@ -14,14 +14,17 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Button, Input, Space, Tag, Typography, Spin, message, Divider, Badge, Radio, InputNumber } from 'antd'
+import { Button, Input, Radio, InputNumber, Spin, message, Divider, Tag } from 'antd'
 import { wsService } from '../services/ws'
 import { apiService } from '../services/api'
 import { mergePublicEvents } from '../services/eventStream'
 import { useGameStore } from '../stores/gameStore'
-import type { WSMessage, GameDetail, Roster } from '../types'
-
-const { Title, Text } = Typography
+import type { WSMessage, GameDetail, Roster, PlayerInfo } from '../types'
+import IdentityPanel from '../components/game/IdentityPanel'
+import PlayerTable from '../components/game/PlayerTable'
+import CurrentSpeechPanel from '../components/game/CurrentSpeechPanel'
+import EventLogPanel from '../components/game/EventLogPanel'
+import './GamePage.css'
 
 // 事件日志条目
 interface LogEntry {
@@ -33,6 +36,27 @@ interface LogEntry {
   text: string
   phase: string
 }
+
+// ─── 辅助函数 ───
+
+/** 日志条目 CSS 类名映射 */
+function getLogEntryClass(type: string): string {
+  const base = 'log-entry'
+  if (type === 'game_over') return `${base} ${base}--gameover`
+  if (type === 'death_announce' || type === 'eliminate') return `${base} ${base}--death`
+  if (type === 'last_words') return `${base} ${base}--last-words`
+  if (type === 'speech' || type === 'pk_speech') return `${base} ${base}--speech`
+  if (type === 'vote') return `${base} ${base}--vote`
+  if (type === 'vote_result' || type === 'pk_announce') return `${base} ${base}--result`
+  if (type === 'phase_change' || type === 'night_phase' || type.includes('night')) return `${base} ${base}--night`
+  return `${base} ${base}--system`
+}
+
+/** 角色中文名 */
+const ROLE_CN: Record<string, string> = {
+  werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫',
+}
+const roleCN = (role?: string | null) => (role ? (ROLE_CN[role] || role) : null)
 
 export default function GamePage() {
   const { gameId } = useParams<{ gameId: string }>()
@@ -322,6 +346,20 @@ export default function GamePage() {
   const currentPhase = store.currentPhase
   const isNight = currentPhase === 'night'
   const isGameOver = !!store.winner
+  const aliveCount = players.filter(p => p.is_alive).length
+  const recentSpeeches = speeches.slice(-5)
+  const themeClass = isNight ? 'game-page game-page--night' : 'game-page game-page--day'
+
+  // 判断玩家是否可选
+  const isPlayerSelectable = (p: PlayerInfo): boolean => {
+    if (!store.actionPrompt || !store.mySeat) return false
+    const ap = store.actionPrompt
+    if (ap.actionType === 'speech' || ap.actionType === 'last_words' || ap.actionType === 'save') return false
+    if (ap.allowedTargetSeats?.length) return ap.allowedTargetSeats.includes(p.seat_number)
+    if (!p.is_alive || p.seat_number === store.mySeat) return false
+    if (ap.actionType === 'kill' && store.myCompanions.includes(p.seat_number)) return false
+    return true
+  }
 
   // 事件日志转文本
   function wsMessageToLog(msg: WSMessage): LogEntry | null {
@@ -351,7 +389,6 @@ export default function GamePage() {
       'victory_check': null,  // game_over 事件会展示完整信息，此处不重复
       'game_over': (() => {
         const winText = d.winner === 'werewolf' ? '狼人' : '好人'
-        const roleMap: Record<string, string> = { werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫' }
         const lines: string[] = [`🏆 游戏结束 - ${winText}胜！`]
         if (d.reason_text) lines.push(`📋 胜利原因: ${d.reason_text}`)
         const nd = d.night_deaths
@@ -364,7 +401,7 @@ export default function GamePage() {
           const seats = Object.keys(d.all_roles).sort((a: string, b: string) => Number(a) - Number(b))
           for (const seat of seats) {
             const p = d.all_roles[seat]
-            const rname = roleMap[p.role] || p.role
+            const rname = ROLE_CN[p.role] || p.role
             const status = p.is_alive ? '存活' : '已淘汰'
             lines.push(`  ${seat}号(${p.name}) - ${rname} ${status === '存活' ? '✓' : '✗'}`)
           }
@@ -378,336 +415,266 @@ export default function GamePage() {
     return { event_id: msg.event_id, event_order: msg.event_order, timestamp: msg.timestamp, time, type: msg.type, text, phase }
   }
 
-  // 角色中文
-  const roleCN = (role?: string | null) => {
-    const map: Record<string, string> = { werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫' }
-    return role ? (map[role] || role) : null
-  }
+  // 计算可选座位列表
+  const selectableSeats = players.filter(p => isPlayerSelectable(p)).map(p => p.seat_number)
+  // 当前发言座位
+  const speakingSeat = speeches.length > 0 ? speeches[speeches.length - 1].seat : null
+  // 操作面板主题类
+  const actionThemeClass = store.actionPrompt ? `action-prompt--${store.actionPrompt.actionType}` : 'action-prompt--default'
 
   return (
-    <div style={{
-      maxWidth: 1000,
-      margin: '0 auto',
-      padding: '20px',
-      background: isNight ? '#0a0a2e' : '#f0f2f5',
-      minHeight: '100vh',
-      transition: 'background 0.5s',
-    }}>
-      {/* 标题栏 */}
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Title level={3} style={{ color: isNight ? '#fff' : '#000', margin: 0 }}>
-          {isNight ? '🌙 夜晚' : '☀️ 白天'}
-          {currentPhase && ` - 第${store.currentRound}轮`}
-        </Title>
-        <Space>
-          {isGameOver && (
-            <Tag color="red" style={{ fontSize: 16, padding: '4px 12px' }}>
-              🏆 {store.winner === 'werewolf' ? '狼人胜' : '好人胜'}
-            </Tag>
-          )}
-          {started && !isGameOver && <Badge status="processing" text={<span style={{color: isNight ? '#fff' : '#000'}}>游戏中</span>} />}
-        </Space>
-      </div>
-
-      <Row gutter={16}>
-        {/* 左侧：玩家座位 + 事件日志 */}
-        <Col span={16}>
-          {/* 玩家座位区 */}
-          <Card title={<span style={{color: isNight ? '#fff' : '#000'}}>🪑 玩家座位</span>}
-                style={{ marginBottom: 16, background: isNight ? 'rgba(255,255,255,0.1)' : '#fff', border: 'none' }}
-                headStyle={{ background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.2)' }}
-          >
-            <Row gutter={[8, 8]}>
-              {players.map((p) => (
-                <Col key={p.seat_number} xs={12} md={players.length > 6 ? 6 : 8}>
-                  <Card size="small" style={{
-                    opacity: p.is_alive ? 1 : 0.35,
-                    borderColor: p.player_type === 'human' ? '#52c41a' : (isNight ? '#444' : '#d9d9d9'),
-                    background: isNight ? 'rgba(255,255,255,0.08)' : '#fff',
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text strong style={{color: isNight ? '#fff' : '#000'}}>{p.seat_number}号</Text>
-                      {p.is_alive
-                        ? <Tag color="green" style={{fontSize: 10}}>存活</Tag>
-                        : <Tag color="red" style={{fontSize: 10}}>💀淘汰</Tag>
-                      }
-                    </div>
-                    <Text type="secondary" style={{ fontSize: 12, color: isNight ? '#ccc' : '#999' }}>{p.player_name}</Text>
-                    <br />
-                    <Space size={4}>
-                      {p.player_type === 'human' && <Tag color="blue" style={{fontSize: 10}}>人类</Tag>}
-                      {p.role && <Tag color={p.role === 'werewolf' ? 'red' : 'blue'} style={{fontSize: 10}}>{roleCN(p.role)}</Tag>}
-                    </Space>
-                  </Card>
-                </Col>
-              ))}
-            </Row>
-          </Card>
-
-          {/* 事件日志流 */}
-          <Card title={<span style={{color: isNight ? '#fff' : '#000'}}>📜 事件日志</span>}
-                style={{ background: isNight ? 'rgba(255,255,255,0.1)' : '#fff', border: 'none' }}
-                headStyle={{ background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.2)' }}
-          >
-            <div style={{ maxHeight: 350, overflowY: 'auto' }}>
-              {eventLog.length === 0 ? (
-                <Text type="secondary" style={{color: isNight ? '#888' : '#999'}}>等待游戏开始...</Text>
-              ) : (
-                  eventLog.map((entry, i) => (
-                  <div key={entry.event_id || i} style={{
-                    marginBottom: 6,
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    background: entry.phase === 'night' ? 'rgba(50,50,150,0.3)' : entry.phase === 'day' ? 'rgba(200,180,50,0.15)' : 'rgba(128,128,128,0.15)',
-                    color: isNight ? '#eee' : '#333',
-                    fontSize: 13,
-                  }}>
-                    <Text type="secondary" style={{ fontSize: 11, color: isNight ? '#888' : '#999', marginRight: 8 }}>{entry.time}</Text>
-                    {entry.text}
-                  </div>
-                ))
-              )}
-              <div ref={logEndRef} />
-            </div>
-          </Card>
-        </Col>
-
-        {/* 右侧：发言区 + 操作面板 */}
-        <Col span={8}>
-          {/* 发言记录 */}
-          <Card title={<span style={{color: isNight ? '#fff' : '#000'}}>💬 发言记录</span>}
-                style={{ marginBottom: 16, background: isNight ? 'rgba(255,255,255,0.1)' : '#fff', border: 'none' }}
-                headStyle={{ background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.2)' }}
-          >
-            <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-              {speeches.length === 0 ? (
-                <Text type="secondary" style={{color: isNight ? '#888' : '#999'}}>暂无发言</Text>
-              ) : (
-                speeches.map((s, i) => (
-                  <div key={i} style={{
-                    marginBottom: 8,
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    background: s.isPk ? 'rgba(200,100,50,0.2)' : (isNight ? 'rgba(255,255,255,0.08)' : '#f5f5f5'),
-                    color: isNight ? '#eee' : '#333',
-                  }}>
-                    <Text strong style={{color: isNight ? '#fff' : '#000'}}>{s.seat}号</Text>
-                    {s.isPk && <Tag color="orange" style={{fontSize: 10, marginLeft: 4}}>PK</Tag>}
-                    <br />
-                    <span style={{ fontSize: 13 }}>{s.content}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-
-          {/* 操作面板 */}
-          <Card title={<span style={{color: isNight ? '#fff' : '#000'}}>🎮 操作面板</span>}
-                style={{ background: isNight ? 'rgba(255,255,255,0.1)' : '#fff', border: 'none' }}
-                headStyle={{ background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.2)' }}
-          >
-            {!started ? (
-              rosterConfig ? (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  <Text strong style={{ color: isNight ? '#fff' : '#000' }}>房间配置（房主）</Text>
-                  <div>
-                    <Text style={{ marginRight: 12, fontSize: 13, color: isNight ? '#ccc' : '#666' }}>对局人数：</Text>
-                    <Radio.Group size="small" value={rosterConfig.playerCount} onChange={(e) => handlePlayerCountChange(e.target.value)}>
-                      <Radio.Button value={6}>6人</Radio.Button>
-                      <Radio.Button value={12}>12人</Radio.Button>
-                    </Radio.Group>
-                  </div>
-                  <div>
-                    <Radio.Group size="small" value={rosterConfig.rosterType} onChange={(e) => {
-                      if (e.target.value === 'official') {
-                        setRosterConfig({ ...rosterConfig, rosterType: 'official', roster: officialRosterFor(rosterConfig.playerCount), errors: [] })
-                      } else {
-                        setRosterConfig({ ...rosterConfig, rosterType: 'custom' })
-                      }
-                    }}>
-                      <Radio value="official">官方默认</Radio>
-                      <Radio value="custom">自定义</Radio>
-                    </Radio.Group>
-                  </div>
-                  <Space wrap size="small">
-                    {(Object.keys(rosterConfig.roster) as (keyof Roster)[]).map(role => (
-                      <span key={role} style={{ fontSize: 12 }}>
-                        {roleCN(role)}: <InputNumber size="small" min={0} max={role === 'werewolf' ? (rosterConfig.playerCount === 6 ? 2 : 4) : role === 'villager' ? rosterConfig.playerCount : 1} disabled={rosterConfig.rosterType === 'official' || role === 'werewolf'} value={rosterConfig.roster[role]} onChange={(v) => handleRosterChange(role, v || 0)} style={{ width: 50 }} />
-                      </span>
-                    ))}
-                  </Space>
-                  {rosterConfig.errors.map(err => (
-                    <Text key={err} type="danger" style={{ fontSize: 12 }}>{err}</Text>
-                  ))}
-                  <Space>
-                    <Button size="small" onClick={handleResetOfficial} loading={rosterSaving}>恢复官方阵容</Button>
-                    <Button size="small" onClick={handleSaveRoster} loading={rosterSaving} disabled={rosterConfig.errors.length > 0}>保存阵容</Button>
-                  </Space>
-                  <Button type="primary" block size="large" onClick={handleStart} disabled={rosterConfig.errors.length > 0}>开始对局</Button>
-                </Space>
-              ) : (
-                <Button type="primary" block size="large" onClick={handleStart}>开始对局</Button>
-              )
-            ) : isGameOver ? (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Button type="primary" block size="large" onClick={() => navigate(`/replay/${gameId!}`)}>
-                  📺 查看回放
-                </Button>
-                <Button block onClick={() => navigate('/')}>返回大厅</Button>
-              </Space>
-            ) : store.actionPrompt ? (
-              /* 显示操作提示：轮到你了 */
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div style={{ padding: '8px 12px', background: 'rgba(82,196,26,0.15)', borderRadius: 8, textAlign: 'center' }}>
-                  <Text strong style={{ color: '#52c41a' }}>
-                    ✋ 轮到你了！
-                  </Text>
-                  <br />
-                  <Text style={{ color: isNight ? '#eee' : '#333', fontSize: 13 }}>
-                    {store.actionPrompt.actionType === 'kill' && '你是狼人，请选择今晚要击杀的目标'}
-                    {store.actionPrompt.actionType === 'verify' && '你是预言家，请选择要查验的玩家'}
-                     {store.actionPrompt.actionType === 'save' && '你是女巫，请选择是否使用解药/毒药'}
-                     {store.actionPrompt.actionType === 'guard' && '你是守卫，请选择本夜守护的玩家'}
-                     {store.actionPrompt.actionType === 'hunter_shoot' && '你是猎人，请选择带走的玩家或跳过'}
-                    {store.actionPrompt.actionType === 'speech' && '请输入你的发言'}
-                    {store.actionPrompt.actionType === 'vote' && '请选择你要投票淘汰的玩家'}
-                    {store.actionPrompt.actionType === 'last_words' && '你被淘汰了，请输入遗言'}
-                  </Text>
-                  {store.actionPrompt.actionType === 'kill' && store.myCompanions.length > 0 && (
-                    <div style={{ marginTop: 4, fontSize: 12, color: '#ff4d4f' }}>
-                      🐺 同伴: {store.myCompanions.map(c => `${c}号`).join('、')}（不能击杀同伴）
-                    </div>
-                  )}
-                  {store.actionPrompt.allowedTargetSeats && store.actionPrompt.allowedTargetSeats.length > 0 && (
-                    <div style={{ marginTop: 4, fontSize: 12, color: isNight ? '#bbb' : '#666' }}>
-                      可选目标: {store.actionPrompt.allowedTargetSeats.map(s => `${s}号`).join('、')}
-                      {store.actionPrompt.actionType === 'guard' && store.actionPrompt.lastTarget ? `（上夜守护 ${store.actionPrompt.lastTarget}号，不可连续守护）` : ''}
-                    </div>
-                  )}
-                </div>
-                {/* 女巫专属操作面板 */}
-                {store.actionPrompt.actionType === 'save' ? (
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    {/* 显示今晚被杀的人 */}
-                    {witchInfo && witchInfo.night_kill_target !== null && (
-                      <div style={{ padding: '8px 12px', background: 'rgba(255,77,79,0.15)', borderRadius: 8, textAlign: 'center' }}>
-                        <Text style={{ color: '#ff4d4f', fontSize: 14 }}>
-                          💀 今晚被狼人击杀的是: <Text strong style={{ color: '#ff4d4f', fontSize: 16 }}>{witchInfo.night_kill_target}号</Text>
-                        </Text>
-                      </div>
-                    )}
-                    {witchInfo && witchInfo.night_kill_target === null && (
-                      <div style={{ padding: '8px 12px', background: 'rgba(82,196,26,0.1)', borderRadius: 8, textAlign: 'center' }}>
-                        <Text style={{ color: '#52c41a' }}>🌙 今晚是平安夜，无人被击杀</Text>
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {witchInfo?.save_available && (
-                        <Button type="primary" danger block onClick={handleWitchSave}>
-                          💚 使用解药救人
-                        </Button>
-                      )}
-                      {witchInfo?.poison_available && (
-                        <>
-                          <Text style={{ fontSize: 12, color: isNight ? '#ccc' : '#666', textAlign: 'center' }}>
-                            ☠️ 选择毒药目标（或跳过）:
-                          </Text>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
-                            {players.filter(p => (store.actionPrompt?.allowedTargetSeats?.length ? store.actionPrompt.allowedTargetSeats.includes(p.seat_number) : (p.is_alive && p.seat_number !== store.mySeat))).map(p => (
-                              <Button key={p.seat_number} size="small" danger
-                                onClick={() => handleActionSelect(p.seat_number)}>
-                                {p.seat_number}号
-                              </Button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                      <Button block onClick={() => handleActionSelect(null)}>
-                        ⏭️ 跳过不用药
-                      </Button>
-                    </div>
-                  </Space>
-                ) : store.actionPrompt.actionType === 'speech' || store.actionPrompt.actionType === 'last_words' ? (
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <Input.TextArea
-                      value={speechText}
-                      onChange={(e) => setSpeechText(e.target.value)}
-                      placeholder="输入你的发言..."
-                      rows={3}
-                      maxLength={500}
-                      style={{ background: isNight ? 'rgba(255,255,255,0.1)' : '#fff', color: isNight ? '#fff' : '#000' }}
-                    />
-                    <Button type="primary" block onClick={handleSpeech} disabled={!speechText.trim()}>
-                      提交发言
-                    </Button>
-                  </Space>
-                ) : (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
-                    {players.filter(p => (store.actionPrompt?.allowedTargetSeats?.length
-                      ? store.actionPrompt.allowedTargetSeats.includes(p.seat_number)
-                      : (p.is_alive && p.seat_number !== store.mySeat
-                        && !(store.actionPrompt!.actionType === 'kill' && store.myCompanions.includes(p.seat_number))))
-                    ).map(p => (
-                      <Button
-                        key={p.seat_number}
-                        size="small"
-                        onClick={() => handleActionSelect(p.seat_number)}
-                      >
-                        {p.seat_number}号
-                      </Button>
-                    ))}
-                    {((store.actionPrompt!.actionType === 'vote' || store.actionPrompt!.actionType === 'hunter_shoot') && (store.actionPrompt.canSkip ?? true)) && (
-                      <Button size="small" onClick={() => handleActionSelect(null)}>{store.actionPrompt!.actionType === 'hunter_shoot' ? '跳过不开枪' : '弃票'}</Button>
-                    )}
-                  </div>
-                )}
-              </Space>
-            ) : store.myRole ? (
-              /* 游戏进行中，但不是你的回合 */
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div style={{ textAlign: 'center', padding: 8 }}>
-                  <Tag color={store.myRole === 'werewolf' ? 'red' : 'blue'} style={{ fontSize: 14, padding: '4px 12px' }}>
-                    你的身份: {roleCN(store.myRole)} ({store.mySeat}号)
-                  </Tag>
-                  {store.myRole === 'werewolf' && store.myCompanions.length > 0 && (
-                    <div style={{ marginTop: 4 }}>
-                      <Text style={{ color: '#ff4d4f', fontSize: 13 }}>
-                        🐺 你的狼人同伴: {store.myCompanions.map(c => `${c}号`).join('、')}
-                      </Text>
-                    </div>
-                  )}
-                  {store.myRole === 'seer' && seerResults.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <Text style={{ fontSize: 12, color: isNight ? '#aaa' : '#666' }}>🔍 查验记录:</Text>
-                      {seerResults.map((r, i) => (
-                        <div key={i} style={{ fontSize: 12, marginTop: 2 }}>
-                          <Tag color={r.result === 'werewolf' ? 'red' : 'green'} style={{ fontSize: 11 }}>
-                            第{r.round}轮: {r.target}号{r.result === 'werewolf' ? '🐺 狼人' : '✅ 好人'}
-                          </Tag>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <Divider style={{ margin: '4px 0' }} />
-                <Text type="secondary" style={{ fontSize: 12, color: isNight ? '#aaa' : '#999' }}>
-                  {store.gameMode === 'mixed'
-                    ? '等待轮到你的操作...AI 玩家正在思考'
-                    : '纯AI模式下无需操作，游戏自动运行'}
-                </Text>
-              </Space>
-            ) : store.gameMode === 'mixed' ? (
-              <Text type="secondary" style={{ color: isNight ? '#aaa' : '#999' }}>
-                正在同步你的私密身份信息…
-              </Text>
+    <div className={themeClass}>
+      <div className="game-page__inner">
+        {/* ─── 顶部状态栏 ─── */}
+        <header className="game-header">
+          <div className="game-header__left">
+            <span className="game-header__phase-icon">{isNight ? '🌙' : '☀️'}</span>
+            <span className="game-header__phase-text">{isNight ? '夜晚' : '白天'}</span>
+            {currentPhase && <span className="game-header__round">第 {store.currentRound} 轮</span>}
+          </div>
+          <div className="game-header__right">
+            {isGameOver ? (
+              <Tag color={store.winner === 'werewolf' ? 'red' : 'green'} style={{ fontSize: 14, padding: '2px 10px' }}>
+                🏆 {store.winner === 'werewolf' ? '狼人胜' : '好人胜'}
+              </Tag>
+            ) : started ? (
+              <>
+                <span className="game-header__status-dot" />
+                <span className="game-header__status-text">游戏中</span>
+              </>
             ) : (
-              <Text type="secondary" style={{ color: isNight ? '#aaa' : '#999' }}>
-                纯AI模式，游戏自动运行
-              </Text>
+              <span className="game-header__status-text">等待开始</span>
             )}
-          </Card>
-        </Col>
-      </Row>
+            <span className="game-header__alive-count">存活 {aliveCount} / {players.length}</span>
+            <span className="game-header__mode-badge">{store.gameMode === 'mixed' ? '人机混合' : '纯AI'}</span>
+          </div>
+        </header>
+
+        {/* ─── 三栏主布局 ─── */}
+        <div className="game-layout">
+          {/* 左侧：我的身份 */}
+          <div className="game-layout__left">
+            {store.myRole ? (
+              <IdentityPanel
+                myRole={store.myRole}
+                mySeat={store.mySeat}
+                myCompanions={store.myCompanions}
+                seerResults={seerResults}
+                witchInfo={witchInfo}
+                players={players}
+                aliveCount={aliveCount}
+                totalPlayers={players.length}
+                currentRound={store.currentRound}
+                gameMode={store.gameMode}
+                roster={null}
+              />
+            ) : (
+              <div className="gp-panel">
+                <div className="waiting-panel">
+                  <div className="waiting-panel__icon">🎭</div>
+                  {store.gameMode === 'mixed' ? '正在同步你的私密身份信息…' : '等待游戏开始'}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 中间：圆桌玩家区域 */}
+          <div className="game-layout__center">
+            <div className="gp-panel" style={{ padding: '12px' }}>
+              <PlayerTable
+                players={players}
+                mySeat={store.mySeat}
+                myRole={store.myRole}
+                myCompanions={store.myCompanions}
+                currentPhase={currentPhase}
+                currentRound={store.currentRound}
+                isNight={isNight}
+                selectableSeats={selectableSeats}
+                onSeatClick={handleActionSelect}
+                speakingSeat={speakingSeat}
+              />
+            </div>
+          </div>
+
+          {/* 右侧：当前发言 + 操作面板 */}
+          <div className="game-layout__right">
+            {/* 当前发言 */}
+            <div className="gp-panel">
+              <CurrentSpeechPanel speeches={speeches} eventLog={eventLog} />
+            </div>
+
+            {/* 操作面板 */}
+            <div className="gp-panel action-panel">
+              <div className="gp-panel__header">
+                <span>🎮</span>
+                <span>操作面板</span>
+              </div>
+              <div className="gp-panel__body">
+                {/* 未开始：房间配置 */}
+                {!started ? (
+                  rosterConfig ? (
+                    <div className="roster-config">
+                      <div style={{ fontWeight: 700 }}>房间配置（房主）</div>
+                      <div>
+                        <span style={{ marginRight: 12, fontSize: 13, color: 'var(--gp-text2)' }}>对局人数：</span>
+                        <Radio.Group size="small" value={rosterConfig.playerCount} onChange={(e) => handlePlayerCountChange(e.target.value)}>
+                          <Radio.Button value={6}>6人</Radio.Button>
+                          <Radio.Button value={12}>12人</Radio.Button>
+                        </Radio.Group>
+                      </div>
+                      <div>
+                        <Radio.Group size="small" value={rosterConfig.rosterType} onChange={(e) => {
+                          if (e.target.value === 'official') {
+                            setRosterConfig({ ...rosterConfig, rosterType: 'official', roster: officialRosterFor(rosterConfig.playerCount), errors: [] })
+                          } else {
+                            setRosterConfig({ ...rosterConfig, rosterType: 'custom' })
+                          }
+                        }}>
+                          <Radio value="official">官方默认</Radio>
+                          <Radio value="custom">自定义</Radio>
+                        </Radio.Group>
+                      </div>
+                      <div className="roster-config__roles">
+                        {(Object.keys(rosterConfig.roster) as (keyof Roster)[]).map(role => (
+                          <span key={role} className="roster-config__role-item">
+                            {roleCN(role)}: <InputNumber size="small" min={0} max={role === 'werewolf' ? (rosterConfig.playerCount === 6 ? 2 : 4) : role === 'villager' ? rosterConfig.playerCount : 1} disabled={rosterConfig.rosterType === 'official' || role === 'werewolf'} value={rosterConfig.roster[role]} onChange={(v) => handleRosterChange(role, v || 0)} style={{ width: 50 }} />
+                          </span>
+                        ))}
+                      </div>
+                      {rosterConfig.errors.map(err => (
+                        <div key={err} style={{ fontSize: 12, color: 'var(--gp-danger)' }}>{err}</div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Button size="small" onClick={handleResetOfficial} loading={rosterSaving}>恢复官方阵容</Button>
+                        <Button size="small" onClick={handleSaveRoster} loading={rosterSaving} disabled={rosterConfig.errors.length > 0}>保存阵容</Button>
+                      </div>
+                      <Button type="primary" block size="large" onClick={handleStart} disabled={rosterConfig.errors.length > 0}>开始对局</Button>
+                    </div>
+                  ) : (
+                    <Button type="primary" block size="large" onClick={handleStart}>开始对局</Button>
+                  )
+                ) : isGameOver ? (
+                  <div className="game-over-panel">
+                    <Button type="primary" block size="large" onClick={() => navigate(`/replay/${gameId!}`)}>
+                      📺 查看回放
+                    </Button>
+                    <Button block onClick={() => navigate('/')}>返回大厅</Button>
+                  </div>
+                ) : store.actionPrompt ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div className={`action-prompt ${actionThemeClass}`}>
+                      <div className="action-prompt__title">✋ 轮到你了！</div>
+                      <div className="action-prompt__desc">
+                        {store.actionPrompt.actionType === 'kill' && '你是狼人，请选择今晚要击杀的目标'}
+                        {store.actionPrompt.actionType === 'verify' && '你是预言家，请选择要查验的玩家'}
+                        {store.actionPrompt.actionType === 'save' && '你是女巫，请选择是否使用解药/毒药'}
+                        {store.actionPrompt.actionType === 'guard' && '你是守卫，请选择本夜守护的玩家'}
+                        {store.actionPrompt.actionType === 'hunter_shoot' && '你是猎人，请选择带走的玩家或跳过'}
+                        {store.actionPrompt.actionType === 'speech' && '请输入你的发言'}
+                        {store.actionPrompt.actionType === 'vote' && '请选择你要投票淘汰的玩家'}
+                        {store.actionPrompt.actionType === 'last_words' && '你被淘汰了，请输入遗言'}
+                      </div>
+                      {store.actionPrompt.actionType === 'kill' && store.myCompanions.length > 0 && (
+                        <div className="action-prompt__companions">🐺 同伴: {store.myCompanions.map(c => `${c}号`).join('、')}（不能击杀同伴）</div>
+                      )}
+                      {store.actionPrompt.allowedTargetSeats && store.actionPrompt.allowedTargetSeats.length > 0 && (
+                        <div className="action-prompt__targets">
+                          可选目标: {store.actionPrompt.allowedTargetSeats.map(s => `${s}号`).join('、')}
+                          {store.actionPrompt.actionType === 'guard' && store.actionPrompt.lastTarget ? `（上夜守护 ${store.actionPrompt.lastTarget}号，不可连续守护）` : ''}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 女巫专属操作面板 */}
+                    {store.actionPrompt.actionType === 'save' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {witchInfo && witchInfo.night_kill_target !== null && (
+                          <div className="witch-info witch-info--kill">
+                            💀 今晚被狼人击杀的是: <strong>{witchInfo.night_kill_target}号</strong>
+                          </div>
+                        )}
+                        {witchInfo && witchInfo.night_kill_target === null && (
+                          <div className="witch-info witch-info--peace">🌙 今晚是平安夜，无人被击杀</div>
+                        )}
+                        {witchInfo?.save_available && (
+                          <Button type="primary" danger block onClick={handleWitchSave}>💚 使用解药救人</Button>
+                        )}
+                        {witchInfo?.poison_available && (
+                          <>
+                            <div style={{ fontSize: 12, color: 'var(--gp-text2)', textAlign: 'center' }}>☠️ 选择毒药目标（或跳过）:</div>
+                            <div className="action-buttons">
+                              {players.filter(p => (store.actionPrompt?.allowedTargetSeats?.length ? store.actionPrompt.allowedTargetSeats.includes(p.seat_number) : (p.is_alive && p.seat_number !== store.mySeat))).map(p => (
+                                <Button key={p.seat_number} size="small" danger onClick={() => handleActionSelect(p.seat_number)}>{p.seat_number}号</Button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        <Button block onClick={() => handleActionSelect(null)}>⏭️ 跳过不用药</Button>
+                      </div>
+                    ) : store.actionPrompt.actionType === 'speech' || store.actionPrompt.actionType === 'last_words' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <Input.TextArea
+                          value={speechText}
+                          onChange={(e) => setSpeechText(e.target.value)}
+                          placeholder="输入你的发言..."
+                          rows={3}
+                          maxLength={500}
+                        />
+                        <Button type="primary" block onClick={handleSpeech} disabled={!speechText.trim()}>提交发言</Button>
+                      </div>
+                    ) : (
+                      <div className="action-buttons">
+                        {players.filter(p => (store.actionPrompt?.allowedTargetSeats?.length
+                          ? store.actionPrompt.allowedTargetSeats.includes(p.seat_number)
+                          : (p.is_alive && p.seat_number !== store.mySeat
+                            && !(store.actionPrompt!.actionType === 'kill' && store.myCompanions.includes(p.seat_number))))
+                        ).map(p => (
+                          <Button key={p.seat_number} size="small" onClick={() => handleActionSelect(p.seat_number)}>{p.seat_number}号</Button>
+                        ))}
+                        {((store.actionPrompt!.actionType === 'vote' || store.actionPrompt!.actionType === 'hunter_shoot') && (store.actionPrompt.canSkip ?? true)) && (
+                          <Button size="small" onClick={() => handleActionSelect(null)}>{store.actionPrompt!.actionType === 'hunter_shoot' ? '跳过不开枪' : '弃票'}</Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : store.myRole ? (
+                  <div className="action-identity">
+                    <Tag color={store.myRole === 'werewolf' ? 'red' : 'blue'} className="action-identity__tag">
+                      你的身份: {roleCN(store.myRole)} ({store.mySeat}号)
+                    </Tag>
+                    {store.myRole === 'werewolf' && store.myCompanions.length > 0 && (
+                      <div className="action-identity__companions">🐺 你的狼人同伴: {store.myCompanions.map(c => `${c}号`).join('、')}</div>
+                    )}
+                    {store.myRole === 'seer' && seerResults.length > 0 && (
+                      <div className="action-identity__seer-records">
+                        <div className="action-identity__seer-title">🔍 查验记录:</div>
+                        {seerResults.map((r, i) => (
+                          <div key={i} style={{ marginTop: 2 }}>
+                            <Tag color={r.result === 'werewolf' ? 'red' : 'green'} style={{ fontSize: 11 }}>
+                              第{r.round}轮: {r.target}号{r.result === 'werewolf' ? '🐺 狼人' : '✅ 好人'}
+                            </Tag>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Divider style={{ margin: '8px 0' }} />
+                    <div className="action-loading">
+                      {store.gameMode === 'mixed' ? '等待轮到你的操作...AI 玩家正在思考' : '纯AI模式下无需操作，游戏自动运行'}
+                    </div>
+                  </div>
+                ) : store.gameMode === 'mixed' ? (
+                  <div className="action-loading">等待身份同步…</div>
+                ) : (
+                  <div className="action-loading">纯AI模式，游戏自动运行</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ─── 底部事件日志 ─── */}
+        <EventLogPanel eventLog={eventLog} logEndRef={logEndRef} getLogEntryClass={getLogEntryClass} />
+      </div>
     </div>
   )
 }
