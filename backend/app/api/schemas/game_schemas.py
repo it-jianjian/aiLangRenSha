@@ -112,6 +112,7 @@ class GameDetail(BaseModel):
     end_reason: Optional[str] = None            # 结束原因
     players: list[PlayerInfo]                   # 6 个玩家的信息列表
     rounds: list[dict] = []                     # 回合详细数据列表
+    model_name: str = ""                        # LLM 模型名（用于纯AI模式展示）
 
 
 # ================================================================
@@ -277,6 +278,7 @@ class GameDetail(BaseModel):
     roster_type: str = "official"
     roster: dict[str, int] = {}
     roster_locked: bool = False
+    model_name: str = ""                        # LLM 模型名（用于纯AI模式展示）
 
 
 # ── 操作相关 ──────────────────────────────────────────────

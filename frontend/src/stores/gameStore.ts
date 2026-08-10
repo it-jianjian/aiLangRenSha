@@ -19,6 +19,7 @@ interface GameStoreState {
   gameId: string | null
   gameMode: string | null
   gameStatus: 'idle' | 'waiting' | 'playing' | 'finished'
+  modelName: string
 
   // ─── 游戏数据 ───
   players: PlayerInfo[]
@@ -47,7 +48,7 @@ interface GameStoreState {
   messages: WSMessage[]
 
   // ─── Actions ───
-  setGame: (gameId: string, mode: string) => void
+  setGame: (gameId: string, mode: string, modelName?: string) => void
   setPlayers: (players: PlayerInfo[]) => void
   markPlayerDead: (seat: number) => void
   setMyRole: (seat: number, role: string, companions?: number[]) => void
@@ -65,6 +66,7 @@ const initialState = {
   gameId: null as string | null,
   gameMode: null as string | null,
   gameStatus: 'idle' as const,
+  modelName: '',
   players: [] as PlayerInfo[],
   speeches: [] as Speech[],
   votes: {} as Record<number, number | null>,
@@ -81,8 +83,8 @@ const initialState = {
 export const useGameStore = create<GameStoreState>((set) => ({
   ...initialState,
 
-  setGame: (gameId, mode) =>
-    set({ gameId, gameMode: mode, gameStatus: 'waiting' }),
+  setGame: (gameId, mode, modelName) =>
+    set({ gameId, gameMode: mode, gameStatus: 'waiting', modelName: modelName || '' }),
 
   setPlayers: (players) => set({ players }),
   markPlayerDead: (seat) => set((state) => ({

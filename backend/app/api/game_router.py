@@ -148,17 +148,30 @@ async def get_game(
     if not game:
         raise HTTPException(status_code=404, detail="对局不存在")
 
-    # 构建玩家列表：游戏未结束时隐藏角色信息
+    # 构建玩家列表：角色可见性规则
+    # - 游戏未开始（waiting）：所有模式均隐藏角色（尚未分配/不应提前泄露）
+    # - 游戏进行中（playing）：纯 AI 模式角色可见（无信息差）；混合模式隐藏（保护人类身份）
+    # - 游戏结束（finished）：全部揭示
+    is_playing = game.status == GameStatus.PLAYING
+    is_finished = game.status == GameStatus.FINISHED
+    roles_visible = is_finished or (is_playing and game.mode == "pure_ai")
     players = [
         PlayerInfo(
             seat_number=p.seat_number,
             player_name=p.player_name,
             player_type=p.player_type,
-            role=p.role if game.status == GameStatus.FINISHED else None,  # 核心：角色可见性控制
+            role=p.role if roles_visible else None,
             is_alive=p.is_alive,
         ).model_dump()
         for p in game.players
     ]
+
+    config = __import__("json").loads(game.config_json) if game.config_json else {}
+    model_name = config.get("model_name")
+    # 未配置或为 schema 默认占位符 → 回退到实际运行的模型
+    if not model_name or model_name == "qwen-plus":
+        from app.config import get_settings
+        model_name = get_settings().llm_model_name
 
     detail = GameDetail(
         game_id=game.id, mode=game.mode, status=game.status,
@@ -166,6 +179,7 @@ async def get_game(
         end_reason=game.end_reason, players=players, player_count=game.player_count,
         roster_type=game.roster_type, roster=__import__("json").loads(game.roster_json),
         roster_locked=game.roster_locked_at is not None,
+        model_name=model_name,
     )
     return ApiResponse(data=detail.model_dump())
 

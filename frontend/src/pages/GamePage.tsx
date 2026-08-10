@@ -98,7 +98,7 @@ export default function GamePage() {
     applyMessageRef.current = applyMessage
 
     apiService.getGame(gameId).then((detail: GameDetail) => {
-      store.setGame(detail.game_id, detail.mode)
+      store.setGame(detail.game_id, detail.mode, detail.model_name)
       store.setPlayers(detail.players)
       // 初始化阵容编辑状态
       const ownerToken = sessionStorage.getItem(`game-owner-token:${gameId}`)
@@ -207,7 +207,7 @@ export default function GamePage() {
       message.success('游戏开始！')
       // 重新获取游戏详情和公共事件，同步后端已产生的状态
       const detail = await apiService.getGame(gameId)
-      store.setGame(detail.game_id, detail.mode)
+      store.setGame(detail.game_id, detail.mode, detail.model_name)
       store.setPlayers(detail.players)
       if (detail.status === 'playing') {
         setStarted(true)
@@ -472,8 +472,13 @@ export default function GamePage() {
               <div className="gp-panel">
                 <div className="waiting-panel">
                   <div className="waiting-panel__icon">{started ? '🤖' : '🎭'}</div>
-                  {started
-                    ? '纯 AI 模式，游戏自动运行'
+                  {started && store.gameMode === 'pure_ai'
+                    ? (
+                      <>
+                        <div>纯 AI 模式，游戏自动运行</div>
+                        {store.modelName && <div style={{ fontSize: 11, color: 'var(--gp-text3)', marginTop: 6 }}>模型: {store.modelName}</div>}
+                      </>
+                    )
                     : store.gameMode === 'mixed'
                       ? '正在同步你的私密身份信息…'
                       : '等待游戏开始'}
@@ -496,6 +501,8 @@ export default function GamePage() {
                 selectableSeats={selectableSeats}
                 onSeatClick={handleActionSelect}
                 speakingSeat={speakingSeat}
+                gameMode={store.gameMode}
+                modelName={store.modelName}
               />
             </div>
           </div>

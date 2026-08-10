@@ -62,6 +62,7 @@ export interface GameDetail {
   roster_type: 'official' | 'custom'
   roster: Roster
   roster_locked: boolean
+  model_name: string
 }
 
 // ─── 操作相关 ────────────────────────────────────────────

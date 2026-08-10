@@ -3,25 +3,48 @@
  *
  * 职责：展示历史对局的完整过程，支持逐步播放
  * 路由：/replay/:gameId
- *
- * 2.0 改进：
- * - 顶部显示阵容计数摘要
- * - 事件时间线按轮次/昼夜分组
- * - 去除原始 JSON 展示，仅显示中文描述
  */
 
 import { useEffect, useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
-import { Card, Button, Space, Slider, Tag, Typography, Spin, message } from 'antd'
+import { Button, Space, Slider, Spin, message } from 'antd'
 import { StepBackwardOutlined, StepForwardOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons'
 import { apiService } from '../services/api'
 import type { ReplayData, ReplayStep, Roster } from '../types'
+import './ReplayPage.css'
 
-const { Title, Text } = Typography
-
-// 角色中文映射
 const roleCN: Record<string, string> = {
   werewolf: '狼人', villager: '村民', seer: '预言家', witch: '女巫', hunter: '猎人', guard: '守卫'
+}
+
+const roleTagClass = (role: string) => {
+  const map: Record<string, string> = {
+    werewolf: 'replay-role-tag--werewolf',
+    seer: 'replay-role-tag--seer',
+    witch: 'replay-role-tag--witch',
+    hunter: 'replay-role-tag--hunter',
+    guard: 'replay-role-tag--guard',
+    villager: 'replay-role-tag--villager',
+  }
+  return map[role] || 'replay-role-tag'
+}
+
+const phaseClass = (phase: string) => {
+  if (phase === 'night') return 'replay-event__phase-tag--night'
+  if (phase === 'day') return 'replay-event__phase-tag--day'
+  return 'replay-event__phase-tag--system'
+}
+
+const phaseLabel = (phase: string) => {
+  if (phase === 'night') return '夜晚'
+  if (phase === 'day') return '白天'
+  return '系统'
+}
+
+const phaseIcon = (phase: string) => {
+  if (phase === 'night') return '🌙'
+  if (phase === 'day') return '☀️'
+  return '⚙️'
 }
 
 export default function ReplayPage() {
@@ -33,27 +56,16 @@ export default function ReplayPage() {
 
   useEffect(() => {
     if (!gameId) return
-    apiService.getReplay(gameId).then((data: ReplayData) => {
-      setReplay(data)
-    }).catch(() => {
-      message.error('加载回放失败')
-    }).finally(() => setLoading(false))
+    apiService.getReplay(gameId).then(setReplay).catch(() => message.error('加载回放失败')).finally(() => setLoading(false))
   }, [gameId])
 
-  // 自动播放
   useEffect(() => {
     if (!playing || !replay) return
-    if (currentStep >= replay.total_steps - 1) {
-      setPlaying(false)
-      return
-    }
-    const timer = setTimeout(() => {
-      setCurrentStep(s => s + 1)
-    }, 1500) // 1.5秒一步
+    if (currentStep >= replay.total_steps - 1) { setPlaying(false); return }
+    const timer = setTimeout(() => setCurrentStep(s => s + 1), 1500)
     return () => clearTimeout(timer)
   }, [playing, currentStep, replay])
 
-  // 按轮次分组事件
   const groupedSteps = useMemo(() => {
     if (!replay) return []
     const groups: { round: number; phase: string; steps: { step: ReplayStep; index: number }[] }[] = []
@@ -62,172 +74,154 @@ export default function ReplayPage() {
       const round = step.round ?? 0
       const phase = step.phase || 'system'
       let group = groups.find(g => g.round === round && g.phase === phase)
-      if (!group) {
-        group = { round, phase, steps: [] }
-        groups.push(group)
-      }
+      if (!group) { group = { round, phase, steps: [] }; groups.push(group) }
       group.steps.push({ step, index: i })
     }
     return groups
   }, [replay])
 
-  if (loading) {
-    return <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>
-  }
-
-  if (!replay) {
-    return <div style={{ textAlign: 'center', padding: 100 }}><Text type="secondary">回放数据不可用</Text></div>
-  }
+  if (loading) return <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>
+  if (!replay) return <div style={{ textAlign: 'center', padding: 100 }}><span style={{ color: 'var(--gp-text2)' }}>回放数据不可用</span></div>
 
   const currentEvent: ReplayStep | undefined = replay.steps[currentStep]
 
-  const phaseColor = (phase: string) => {
-    if (phase === 'night') return 'blue'
-    if (phase === 'day') return 'orange'
-    return 'default'
-  }
-
-  const phaseLabel = (phase: string) => {
-    if (phase === 'night') return '夜晚'
-    if (phase === 'day') return '白天'
-    return '系统'
-  }
-
-  // 阵容计数摘要
-  const rosterSummary = (roster: Roster) => {
-    return Object.entries(roster)
-      .filter(([, count]) => count > 0)
-      .map(([role, count]) => `${count} ${roleCN[role] || role}`)
-      .join('、')
+  const rosterSummary = (r: Roster) => {
+    return Object.entries(r).filter(([, count]) => count > 0).map(([role, count]) => ({ role, count }))
   }
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', padding: '20px' }}>
-      <Title level={3}>对局完整回放</Title>
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <Space wrap>
-          <Tag>{replay.player_count} 人局</Tag>
-          <Tag color={replay.winner === 'werewolf' ? 'red' : 'blue'}>
-            {replay.winner === 'werewolf' ? '狼人胜利' : '好人胜利'}
-          </Tag>
-          <Text>胜负原因：{replay.end_reason}</Text>
-          {rosterSummary(replay.roster) && (
-            <Text type="secondary">阵容：{rosterSummary(replay.roster)}</Text>
-          )}
-        </Space>
-      </Card>
+    <div className="replay-page">
+      <div className="replay-page__inner">
+        {/* ─── 标题 ─── */}
+        <div className="replay-header">
+          <h2 className="replay-header__title">对局回放</h2>
+          <p className="replay-header__subtitle">完整重现每一个推理瞬间</p>
+        </div>
 
-      {/* 角色映射 */}
-      <Card size="small" title="角色揭示" style={{ marginBottom: 16 }}>
-        <Space wrap>
-          {Object.entries(replay.role_mapping).map(([seat, role]) => (
-            <Tag key={seat} color={role === 'werewolf' ? 'red' : role === 'seer' ? 'purple' : role === 'witch' ? 'green' : 'blue'}>
-              {seat}号: {roleCN[role] || role}
-            </Tag>
-          ))}
-        </Space>
-      </Card>
-
-      {/* 当前事件展示 */}
-      <Card
-        title="当前事件"
-        style={{ marginBottom: 16 }}
-        extra={
-          <Tag color={phaseColor(currentEvent?.phase || 'system')}>
-            {phaseLabel(currentEvent?.phase || 'system')}
-          </Tag>
-        }
-      >
-        {currentEvent && (
-          <div>
-            <Text strong>步骤 {currentStep + 1} / {replay.total_steps}</Text>
-            {currentEvent.round != null && (
-              <Text type="secondary"> · 第 {currentEvent.round} 轮</Text>
-            )}
-            <br /><br />
-            <Text>{currentEvent.description}</Text>
-          </div>
-        )}
-      </Card>
-
-      {/* 播放控制 */}
-      <Card>
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <Slider
-            min={0}
-            max={replay.total_steps - 1}
-            value={currentStep}
-            onChange={setCurrentStep}
-          />
-          <Space style={{ justifyContent: 'center', width: '100%' }} size="large">
-            <Button
-              icon={<StepBackwardOutlined />}
-              disabled={currentStep === 0}
-              onClick={() => setCurrentStep(s => Math.max(0, s - 1))}
-            />
-            <Button
-              type="primary"
-              size="large"
-              icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-              onClick={() => {
-                if (currentStep >= replay.total_steps - 1) {
-                  setCurrentStep(0)
-                  setPlaying(true)
-                } else {
-                  setPlaying(!playing)
-                }
-              }}
-            >
-              {playing ? '暂停' : currentStep >= replay.total_steps - 1 ? '重播' : '播放'}
-            </Button>
-            <Button
-              icon={<StepForwardOutlined />}
-              disabled={currentStep >= replay.total_steps - 1}
-              onClick={() => setCurrentStep(s => Math.min(replay.total_steps - 1, s + 1))}
-            />
-          </Space>
-        </Space>
-      </Card>
-
-      {/* 事件时间线 — 按轮次/昼夜分组 */}
-      <Card title="事件时间线" style={{ marginTop: 16 }}>
-        <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-          {groupedSteps.map((group, gi) => (
-            <div key={gi} style={{ marginBottom: 12 }}>
-              <div style={{
-                padding: '4px 12px',
-                background: group.phase === 'night' ? 'rgba(50,50,150,0.1)' : 'rgba(200,180,50,0.1)',
-                borderRadius: 6,
-                marginBottom: 4,
-                fontWeight: 'bold',
-              }}>
-                <Tag color={phaseColor(group.phase)} style={{ marginRight: 8 }}>
-                  {phaseLabel(group.phase)}
-                </Tag>
-                第 {group.round} 轮
-              </div>
-              {group.steps.map(({ step, index }) => (
-                <div
-                  key={index}
-                  style={{
-                    padding: '6px 12px 6px 24px',
-                    marginBottom: 2,
-                    borderRadius: 4,
-                    background: index === currentStep ? '#e6f4ff' : '#f5f5f5',
-                    cursor: 'pointer',
-                    fontSize: 13,
-                  }}
-                  onClick={() => { setCurrentStep(index); setPlaying(false) }}
-                >
-                  <Text type={index === currentStep ? undefined : 'secondary'}>
-                    {step.description}
-                  </Text>
+        {/* ─── 阵容摘要 ─── */}
+        <div className="replay-panel">
+          <div className="replay-panel__header">对局信息</div>
+          <div className="replay-panel__body">
+            <div className="replay-summary">
+              <span className="replay-summary__item">{replay.player_count} 人局</span>
+              <span className="replay-summary__item">
+                胜方：<span className="replay-summary__value" style={{ color: replay.winner === 'werewolf' ? 'var(--gp-danger)' : 'var(--gp-success)' }}>
+                  {replay.winner === 'werewolf' ? '狼人' : '好人'}
+                </span>
+              </span>
+              <span className="replay-summary__item">原因：<span className="replay-summary__value">{replay.end_reason}</span></span>
+            </div>
+            {rosterSummary(replay.roster).length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--gp-text3)', marginBottom: 6 }}>阵容配置</div>
+                <div className="replay-roles">
+                  {rosterSummary(replay.roster).map(({ role, count }) => (
+                    <span key={role} className={`replay-role-tag ${roleTagClass(role)}`}>
+                      {roleCN[role] || role} ×{count}
+                    </span>
+                  ))}
                 </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ─── 角色揭示 ─── */}
+        <div className="replay-panel">
+          <div className="replay-panel__header">角色揭示</div>
+          <div className="replay-panel__body">
+            <div className="replay-roles">
+              {Object.entries(replay.role_mapping).map(([seat, role]) => (
+                <span key={seat} className={`replay-role-tag ${roleTagClass(role)}`}>
+                  {seat}号 {roleCN[role] || role}
+                </span>
               ))}
             </div>
-          ))}
+          </div>
         </div>
-      </Card>
+
+        {/* ─── 当前事件 ─── */}
+        <div className="replay-panel">
+          <div className="replay-panel__header" style={{ justifyContent: 'space-between' }}>
+            <span>当前事件</span>
+            {currentEvent && (
+              <span className={`replay-event__phase-tag ${phaseClass(currentEvent.phase || 'system')}`}>
+                {phaseIcon(currentEvent.phase || 'system')} {phaseLabel(currentEvent.phase || 'system')}
+              </span>
+            )}
+          </div>
+          <div className="replay-panel__body replay-event">
+            {currentEvent && (
+              <>
+                <div className="replay-event__step">
+                  <span className="replay-event__step-num">步骤 {currentStep + 1} / {replay.total_steps}</span>
+                  {currentEvent.round != null && ` · 第 ${currentEvent.round} 轮`}
+                </div>
+                <div className="replay-event__desc">{currentEvent.description}</div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ─── 播放控制 ─── */}
+        <div className="replay-panel">
+          <div className="replay-controls">
+            <Slider
+              className="replay-controls__slider"
+              min={0}
+              max={replay.total_steps - 1}
+              value={currentStep}
+              onChange={setCurrentStep}
+            />
+            <div className="replay-controls__buttons">
+              <Button
+                icon={<StepBackwardOutlined />}
+                disabled={currentStep === 0}
+                onClick={() => setCurrentStep(s => Math.max(0, s - 1))}
+              />
+              <Button
+                type="primary"
+                size="large"
+                icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                onClick={() => {
+                  if (currentStep >= replay.total_steps - 1) { setCurrentStep(0); setPlaying(true) }
+                  else { setPlaying(!playing) }
+                }}
+              >
+                {playing ? '暂停' : currentStep >= replay.total_steps - 1 ? '重播' : '播放'}
+              </Button>
+              <Button
+                icon={<StepForwardOutlined />}
+                disabled={currentStep >= replay.total_steps - 1}
+                onClick={() => setCurrentStep(s => Math.min(replay.total_steps - 1, s + 1))}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ─── 事件时间线 ─── */}
+        <div className="replay-panel">
+          <div className="replay-panel__header">事件时间线</div>
+          <div className="replay-timeline">
+            {groupedSteps.map((group, gi) => (
+              <div key={gi} className="replay-timeline__group">
+                <div className={`replay-timeline__group-header ${group.phase === 'day' ? 'replay-timeline__group-header--day' : ''}`}>
+                  {phaseIcon(group.phase)} 第 {group.round} 轮
+                </div>
+                {group.steps.map(({ step, index }) => (
+                  <div
+                    key={index}
+                    className={`replay-timeline__item ${index === currentStep ? 'replay-timeline__item--active' : ''}`}
+                    onClick={() => { setCurrentStep(index); setPlaying(false) }}
+                  >
+                    {step.description}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,8 +1,9 @@
 /**
  * 圆桌玩家区域 — 6人环形布局 / 12人椭圆布局
- * 纯展示组件，所有数据通过 props 传入
+ * 支持鼠标拖拽平移 + 滚轮缩放
  */
-import { Avatar } from 'antd'
+import { useState, useRef, useCallback } from 'react'
+import { Avatar, Tooltip } from 'antd'
 import type { PlayerInfo } from '../../types'
 
 /** 角色中文名 */
@@ -46,8 +47,9 @@ interface PlayerTableProps {
   isNight: boolean
   selectableSeats: number[]
   onSeatClick: (seat: number) => void
-  /** 当前正在发言的座位号 */
   speakingSeat?: number | null
+  gameMode?: string | null
+  modelName?: string
 }
 
 /** 6人圆桌座位位置 (百分比) — 均匀分布 */
@@ -78,15 +80,76 @@ const SEAT_POS_12: Record<number, { top: string; left: string }> = {
 
 export default function PlayerTable({
   players, mySeat, myCompanions, currentPhase, currentRound, isNight,
-  selectableSeats, onSeatClick, speakingSeat,
+  selectableSeats, onSeatClick, speakingSeat, gameMode, modelName,
 }: PlayerTableProps) {
   const is6 = players.length <= 6
   const posMap = is6 ? SEAT_POS_6 : SEAT_POS_12
+  const isPureAI = gameMode === 'pure_ai'
+
+  // ─── 拖拽 + 缩放状态 ───
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const isDragging = useRef(false)
+  const dragStart = useRef({ x: 0, y: 0 })
+  const panStart = useRef({ x: 0, y: 0 })
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // 只响应左键
+    if (e.button !== 0) return
+    isDragging.current = true
+    dragStart.current = { x: e.clientX, y: e.clientY }
+    panStart.current = { ...pan }
+    e.preventDefault()
+  }, [pan])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging.current) return
+    const dx = e.clientX - dragStart.current.x
+    const dy = e.clientY - dragStart.current.y
+    setPan({ x: panStart.current.x + dx, y: panStart.current.y + dy })
+  }, [])
+
+  const handleMouseUp = useCallback(() => {
+    isDragging.current = false
+  }, [])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? -0.08 : 0.08
+    setZoom(z => Math.min(2.5, Math.max(0.5, z + delta)))
+  }, [])
+
+  const resetView = useCallback(() => {
+    setPan({ x: 0, y: 0 })
+    setZoom(1)
+  }, [])
 
   return (
     <div className="round-table">
-      {/* 玩家座位 */}
-      <div className="round-table__seats">
+      {/* 缩放控制按钮 */}
+      <div className="round-table__zoom-controls">
+        <button onClick={() => setZoom(z => Math.min(2.5, z + 0.15))} title="放大">＋</button>
+        <button onClick={() => setZoom(z => Math.max(0.5, z - 0.15))} title="缩小">－</button>
+        <button onClick={resetView} title="重置视角">⟲</button>
+      </div>
+
+      {/* 可拖拽内容层 */}
+      <div
+        ref={containerRef}
+        className="round-table__seats"
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transformOrigin: 'center center',
+          transition: isDragging.current ? 'none' : 'transform 0.15s ease-out',
+          cursor: isDragging.current ? 'grabbing' : 'grab',
+        }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onWheel={handleWheel}
+      >
         {players.map((p) => {
           const pos = posMap[p.seat_number]
           if (!pos) return null
@@ -113,26 +176,28 @@ export default function PlayerTable({
               style={{ top: pos.top, left: pos.left }}
               onClick={isSelectable ? () => onSeatClick(p.seat_number) : undefined}
             >
-              {/* 圆形头像占位 */}
+              {/* 圆形头像 */}
               <div className="round-card__avatar">
-                <Avatar
-                  size={36}
-                  style={{
-                    background: !p.is_alive
-                      ? '#444'
-                      : p.role && ROLE_AVATAR_BG[p.role]
-                        ? ROLE_AVATAR_BG[p.role]
-                        : isSelf
-                          ? 'linear-gradient(135deg, #1677ff, #4096ff)'
-                          : isCompanion
-                            ? 'linear-gradient(135deg, #8b0000, #cc2233)'
-                            : SEAT_GRADIENTS[(p.seat_number - 1) % SEAT_GRADIENTS.length],
-                    fontSize: 16,
-                    fontWeight: 700,
-                  }}
-                >
-                  {p.seat_number}
-                </Avatar>
+                <Tooltip title={isPureAI && modelName ? `${p.player_name} · ${modelName}` : p.player_name}>
+                  <Avatar
+                    size={36}
+                    style={{
+                      background: !p.is_alive
+                        ? '#444'
+                        : p.role && ROLE_AVATAR_BG[p.role]
+                          ? ROLE_AVATAR_BG[p.role]
+                          : isSelf
+                            ? 'linear-gradient(135deg, #1677ff, #4096ff)'
+                            : isCompanion
+                              ? 'linear-gradient(135deg, #8b0000, #cc2233)'
+                              : SEAT_GRADIENTS[(p.seat_number - 1) % SEAT_GRADIENTS.length],
+                      fontSize: 16,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {p.seat_number}
+                  </Avatar>
+                </Tooltip>
               </div>
 
               {/* 座位号 */}
@@ -155,6 +220,13 @@ export default function PlayerTable({
                   </span>
                 )}
               </div>
+
+              {/* 纯AI模式：显示模型名 */}
+              {isPureAI && modelName && revealedRole && (
+                <div className="round-card__model" title={`模型: ${modelName}`}>
+                  {modelName.split('-')[0].split('_')[0]}
+                </div>
+              )}
 
               {/* 死亡蒙层 */}
               {!p.is_alive && <div className="round-card__death-overlay" />}
