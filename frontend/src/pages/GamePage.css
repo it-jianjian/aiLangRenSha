@@ -1,6 +1,6 @@
 /* ================================================================
-   GamePage.css �?狼人杀对局页面样式 v3
-   月夜森林 · 在线桌游�?· 沉浸式视觉优�?
+   GamePage.css �?狼人杀对局页面样式 v3
+   月夜森林 · 在线桌游�?· 沉浸式视觉优�?
    ================================================================ */
 
 /* ─── 主题变量 ─── */
@@ -43,7 +43,7 @@
   background:
     /* 月光散射 */
     radial-gradient(ellipse 45% 35% at 82% 8%, rgba(180, 200, 255, 0.06) 0%, transparent 70%),
-    /* 第二月光�?*/
+    /* 第二月光�?*/
     radial-gradient(circle 180px at 85% 6%, rgba(200, 220, 255, 0.04) 0%, transparent 100%),
     /* 远山雾气 */
     radial-gradient(ellipse 120% 30% at 50% 95%, rgba(30, 50, 100, 0.12) 0%, transparent 60%),
@@ -51,7 +51,7 @@
     radial-gradient(ellipse 25% 60% at 5% 70%, rgba(10, 30, 20, 0.2) 0%, transparent 70%),
     /* 右侧森林暗影 */
     radial-gradient(ellipse 25% 60% at 95% 75%, rgba(10, 20, 30, 0.15) 0%, transparent 70%),
-    /* 主背景渐�?*/
+    /* 主背景渐�?*/
     linear-gradient(180deg, #080b25 0%, #0c1038 30%, #0a0e2e 60%, #060920 100%);
   color: var(--gp-text);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -70,7 +70,7 @@
     /* 月亮 */
     radial-gradient(circle 22px at 85% 6%, rgba(220, 230, 255, 0.18) 0%, rgba(180, 200, 255, 0.06) 60%, transparent 100%),
     radial-gradient(circle 8px at 85% 6%, rgba(240, 245, 255, 0.35) 0%, transparent 100%),
-    /* 星点 �?更多更密 */
+    /* 星点 �?更多更密 */
     radial-gradient(1.2px 1.2px at 8% 12%, rgba(255,255,255,0.35), transparent),
     radial-gradient(1px 1px at 15% 28%, rgba(255,255,255,0.2), transparent),
     radial-gradient(1.5px 1.5px at 22% 8%, rgba(255,255,255,0.4), transparent),
@@ -108,7 +108,7 @@
   right: 0;
   height: 120px;
   background:
-    /* 树影轮廓 �?用多个三角形叠加 */
+    /* 树影轮廓 �?用多个三角形叠加 */
     linear-gradient(135deg, transparent 33%, rgba(5, 15, 10, 0.25) 33%, rgba(5, 15, 10, 0.25) 34%, transparent 34%) -20px 0 / 60px 120px,
     linear-gradient(225deg, transparent 33%, rgba(5, 15, 10, 0.2) 33%, rgba(5, 15, 10, 0.2) 34%, transparent 34%) -20px 0 / 60px 120px,
     linear-gradient(135deg, transparent 38%, rgba(8, 20, 15, 0.18) 38%, rgba(8, 20, 15, 0.18) 39%, transparent 39%) 10px 10px / 80px 110px,
@@ -179,8 +179,8 @@
 /* ─── 三栏主布局 ─── */
 .game-layout {
   display: grid;
-  grid-template-columns: 240px minmax(480px, 1fr) 340px;
-  gap: 12px;
+  grid-template-columns: 200px 1fr 300px;
+  gap: 14px;
   flex: 1;
   min-height: 0;
 }
@@ -188,6 +188,9 @@
 .game-layout__left { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .game-layout__center { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .game-layout__right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* 中间面板不需要额外 padding，圆桌自己管理空间 */
+.game-layout__center > .gp-panel { padding: 0; }
 
 /* ─── 通用玻璃面板 ─── */
 .gp-panel {
@@ -212,7 +215,7 @@
 
 .gp-panel__body { padding: 10px 14px; }
 
-/* ─── 身份面板 (左侧) �?角色主题深化 ─── */
+/* ─── 身份面板 (左侧) �?角色主题深化 ─── */
 .identity-panel {
   padding: 0;
   display: flex;
@@ -254,7 +257,7 @@
   position: relative;
 }
 
-/* 角色大头�?�?带光�?*/
+/* 角色大头�?�?带光�?*/
 .identity-panel__avatar {
   font-size: 52px;
   line-height: 1;
@@ -329,10 +332,11 @@
 .round-table {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 0.85;
-  min-height: 380px;
-  max-height: 520px;
+  aspect-ratio: 1 / 1;
+  min-height: 480px;
+  max-height: 650px;
   margin: 0 auto;
+  overflow: visible;
 }
 
 .round-table__seats { position: relative; width: 100%; height: 100%; }
@@ -349,28 +353,29 @@
 }
 
 .round-table__icon {
-  font-size: 52px;
+  font-size: 40px;
   filter: drop-shadow(0 0 24px rgba(108, 140, 255, 0.35));
   line-height: 1;
   animation: gp-float 4s ease-in-out infinite;
 }
+
+.round-table__phase { font-size: 14px; font-weight: 700; color: var(--gp-text); margin-top: 4px; }
+.round-table__round { font-size: 11px; color: var(--gp-text2); margin-top: 2px; }
 
 @keyframes gp-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-6px); }
 }
 
-.round-table__phase { font-size: 16px; font-weight: 700; color: var(--gp-text); margin-top: 6px; }
-.round-table__round { font-size: 12px; color: var(--gp-text2); margin-top: 2px; }
 
-/* 圆桌装饰�?*/
+/* 圆桌装饰�?*/
 .round-table::before {
   content: '';
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 58%;
-  height: 58%;
+  width: 40%;
+  height: 40%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   border: 1px solid rgba(108, 140, 255, 0.06);
@@ -384,8 +389,8 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 82%;
-  height: 82%;
+  width: 60%;
+  height: 60%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   border: 1px dashed rgba(108, 140, 255, 0.04);
@@ -395,19 +400,20 @@
 /* ─── 圆桌玩家卡片 + 头像增强 ─── */
 .round-card {
   position: absolute;
-  width: 115px;
-  padding: 10px 8px 8px;
-  border-radius: 14px;
+  width: 92px;
+  padding: 8px 4px 6px;
+  border-radius: 12px;
   background: var(--gp-panel);
   border: 2px solid var(--gp-border);
   backdrop-filter: var(--gp-glass);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   z-index: 1;
   transform: translate(-50%, -50%);
+  box-sizing: border-box;
 }
 
 .round-card:hover {
@@ -422,7 +428,7 @@
   position: relative;
 }
 
-/* 头像光环�?*/
+/* 头像光环�?*/
 .round-card__avatar::after {
   content: '';
   position: absolute;
@@ -444,7 +450,7 @@
   50% { box-shadow: 0 0 14px rgba(108, 140, 255, 0.4); }
 }
 
-/* 同伴头像暗红�?*/
+/* 同伴头像暗红�?*/
 .round-card--companion .round-card__avatar::after {
   border-color: #8b0000;
   box-shadow: 0 0 8px rgba(139, 0, 0, 0.3);
@@ -467,25 +473,25 @@
   border-color: rgba(100, 100, 100, 0.3);
 }
 
-.round-card__seat { font-size: 15px; font-weight: 800; color: var(--gp-text); line-height: 1.2; }
+.round-card__seat { font-size: 13px; font-weight: 800; color: var(--gp-text); line-height: 1.1; }
 
 .round-card__name {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--gp-text2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 95px;
+  max-width: 80px;
   text-align: center;
 }
 
 .round-card__tags { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; }
 
 .round-card__tag {
-  font-size: 9px;
-  padding: 1px 5px;
+  font-size: 8px;
+  padding: 1px 4px;
   border-radius: 4px;
-  line-height: 1.4;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -505,7 +511,7 @@
 /* 状态：同伴 */
 .round-card--companion { border-color: #8b0000; box-shadow: 0 0 10px rgba(139, 0, 0, 0.25); }
 
-/* 状态：发言�?*/
+/* 状态：发言�?*/
 .round-card--speaking {
   border-color: var(--gp-gold);
   box-shadow: 0 0 18px rgba(255, 214, 102, 0.25);
@@ -517,7 +523,7 @@
   50% { box-shadow: 0 0 22px rgba(255, 214, 102, 0.35); }
 }
 
-/* 状态：可选目�?*/
+/* 状态：可选目�?*/
 .round-card--selectable {
   cursor: pointer;
   border-color: var(--gp-gold);
@@ -545,7 +551,7 @@
   pointer-events: none;
 }
 
-/* ─── 当前发言面板 (右上) �?高亮增强 ─── */
+/* ─── 当前发言面板 (右上) �?高亮增强 ─── */
 .current-speech { display: flex; flex-direction: column; }
 
 .current-speech__header {
@@ -650,7 +656,7 @@
 .current-speech__summary-seat { font-weight: 700; color: var(--gp-text2); flex-shrink: 0; }
 .current-speech__summary-text { color: var(--gp-text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ─── 操作面板 (右下) �?技能面板风格按�?─── */
+/* ─── 操作面板 (右下) �?技能面板风格按�?─── */
 .action-panel { flex: 1; min-height: 0; }
 
 .action-prompt {
@@ -662,7 +668,7 @@
   overflow: hidden;
 }
 
-/* 操作提示顶部装饰�?*/
+/* 操作提示顶部装饰�?*/
 .action-prompt::before {
   content: '';
   position: absolute;
@@ -687,7 +693,7 @@
 .action-prompt__companions { margin-top: 4px; font-size: 12px; color: var(--gp-danger); }
 .action-prompt__targets { margin-top: 4px; font-size: 12px; color: var(--gp-text2); }
 
-/* 操作主题�?*/
+/* 操作主题�?*/
 .action-prompt--kill { background: var(--gp-danger-soft); }
 .action-prompt--kill .action-prompt__title { color: var(--gp-danger); }
 .action-prompt--verify { background: rgba(124, 108, 255, 0.12); }
@@ -707,7 +713,7 @@
 .action-prompt--default { background: var(--gp-accent-soft); }
 .action-prompt--default .action-prompt__title { color: var(--gp-accent); }
 
-/* 技能按钮风�?*/
+/* 技能按钮风�?*/
 .action-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -755,7 +761,7 @@
 .action-identity__seer-records { margin-top: 8px; }
 .action-identity__seer-title { font-size: 12px; color: var(--gp-text2); }
 
-/* ─── 底部事件日志面板 �?增强 ─── */
+/* ─── 底部事件日志面板 �?增强 ─── */
 .event-log-panel {
   background: var(--gp-panel);
   border: 1px solid var(--gp-border);
@@ -811,7 +817,7 @@
 .event-log-panel__scroll::-webkit-scrollbar-thumb { background: var(--gp-scroll); border-radius: 3px; }
 .event-log-panel__empty { color: var(--gp-text3); font-size: 13px; padding: 20px; text-align: center; }
 
-/* ─── 日志条目 �?增强间距和图�?─── */
+/* ─── 日志条目 �?增强间距和图�?─── */
 .log-entry {
   padding: 6px 12px;
   border-radius: 8px;
@@ -864,19 +870,19 @@
 .waiting-panel { padding: 24px 16px; text-align: center; color: var(--gp-text3); font-size: 13px; }
 .waiting-panel__icon { font-size: 40px; margin-bottom: 10px; opacity: 0.4; animation: gp-float 4s ease-in-out infinite; }
 
-/* ─── 响应�?─── */
+/* ─── 响应�?─── */
 
-/* �?200px: 收窄侧栏 */
+/* �?200px: 收窄侧栏 */
 @media (max-width: 1200px) {
   .game-layout {
-    grid-template-columns: 200px minmax(400px, 1fr) 300px;
+    grid-template-columns: 180px 1fr 260px;
   }
-  .round-card { width: 100px; }
+  .round-card { width: 86px; padding: 7px 4px 5px; }
   .identity-panel__role-name { font-size: 18px; }
   .identity-panel__avatar { font-size: 44px; }
 }
 
-/* �?60px: 隐藏左栏, 身份折叠到顶�?*/
+/* �?60px: 隐藏左栏, 身份折叠到顶�?*/
 @media (max-width: 960px) {
   .game-layout {
     grid-template-columns: 1fr 300px;
@@ -886,7 +892,7 @@
   }
 }
 
-/* �?68px: 单列 */
+/* �?68px: 单列 */
 @media (max-width: 768px) {
   .game-page__inner { padding: 8px 10px 14px; gap: 10px; }
   .game-header { height: auto; min-height: 44px; padding: 8px 12px; flex-wrap: wrap; gap: 6px; }
@@ -898,11 +904,11 @@
   .game-layout__right { max-height: none; }
 
   .round-table {
-    min-height: 280px;
-    aspect-ratio: 1 / 0.75;
+    min-height: 300px;
+    aspect-ratio: 1 / 0.85;
   }
 
-  .round-card { width: 88px; padding: 8px 6px 6px; }
+  .round-card { width: 78px; padding: 6px 4px 5px; }
   .round-card__avatar .ant-avatar { width: 32px !important; height: 32px !important; font-size: 13px !important; }
   .round-card__seat { font-size: 13px; }
   .round-card__name { font-size: 10px; max-width: 70px; }
@@ -914,7 +920,7 @@
   .action-buttons .ant-btn { min-width: 48px; min-height: 36px; }
 }
 
-/* �?80px: 手机 */
+/* �?80px: 手机 */
 @media (max-width: 480px) {
   .game-page__inner { padding: 6px 8px 12px; gap: 8px; }
   .game-header { padding: 6px 10px; }

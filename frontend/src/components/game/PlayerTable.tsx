@@ -50,30 +50,30 @@ interface PlayerTableProps {
   speakingSeat?: number | null
 }
 
-/** 6人圆桌座位位置 (百分比) */
+/** 6人圆桌座位位置 (百分比) — 均匀分布 */
 const SEAT_POS_6: Record<number, { top: string; left: string }> = {
-  1: { top: '42%', left: '2%' },
-  2: { top: '2%', left: '30%' },
-  3: { top: '42%', left: '68%' },
-  4: { top: '78%', left: '68%' },
-  5: { top: '92%', left: '30%' },
-  6: { top: '78%', left: '2%' },
+  1: { top: '44%', left: '16%' },
+  2: { top: '10%', left: '38%' },
+  3: { top: '44%', left: '60%' },
+  4: { top: '74%', left: '60%' },
+  5: { top: '88%', left: '38%' },
+  6: { top: '74%', left: '16%' },
 }
 
-/** 12人椭圆座位位置 (百分比) */
+/** 12人椭圆座位位置 (百分比) — 已内收避免卡片贴边溢出 */
 const SEAT_POS_12: Record<number, { top: string; left: string }> = {
-  1:  { top: '40%', left: '0%' },
-  2:  { top: '12%', left: '6%' },
-  3:  { top: '0%',  left: '26%' },
-  4:  { top: '0%',  left: '48%' },
-  5:  { top: '12%', left: '68%' },
-  6:  { top: '40%', left: '78%' },
-  7:  { top: '60%', left: '78%' },
-  8:  { top: '88%', left: '68%' },
-  9:  { top: '100%', left: '48%' },
-  10: { top: '100%', left: '26%' },
-  11: { top: '88%', left: '6%' },
-  12: { top: '60%', left: '0%' },
+  1:  { top: '40%', left: '8%' },
+  2:  { top: '14%', left: '14%' },
+  3:  { top: '4%',  left: '30%' },
+  4:  { top: '4%',  left: '50%' },
+  5:  { top: '14%', left: '66%' },
+  6:  { top: '40%', left: '74%' },
+  7:  { top: '58%', left: '74%' },
+  8:  { top: '82%', left: '66%' },
+  9:  { top: '92%', left: '50%' },
+  10: { top: '92%', left: '30%' },
+  11: { top: '82%', left: '14%' },
+  12: { top: '58%', left: '8%' },
 }
 
 export default function PlayerTable({
@@ -116,7 +116,7 @@ export default function PlayerTable({
               {/* 圆形头像占位 */}
               <div className="round-card__avatar">
                 <Avatar
-                  size={42}
+                  size={36}
                   style={{
                     background: !p.is_alive
                       ? '#444'

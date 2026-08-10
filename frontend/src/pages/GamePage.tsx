@@ -471,8 +471,12 @@ export default function GamePage() {
             ) : (
               <div className="gp-panel">
                 <div className="waiting-panel">
-                  <div className="waiting-panel__icon">🎭</div>
-                  {store.gameMode === 'mixed' ? '正在同步你的私密身份信息…' : '等待游戏开始'}
+                  <div className="waiting-panel__icon">{started ? '🤖' : '🎭'}</div>
+                  {started
+                    ? '纯 AI 模式，游戏自动运行'
+                    : store.gameMode === 'mixed'
+                      ? '正在同步你的私密身份信息…'
+                      : '等待游戏开始'}
                 </div>
               </div>
             )}
@@ -480,7 +484,7 @@ export default function GamePage() {
 
           {/* 中间：圆桌玩家区域 */}
           <div className="game-layout__center">
-            <div className="gp-panel" style={{ padding: '12px' }}>
+            <div className="gp-panel">
               <PlayerTable
                 players={players}
                 mySeat={store.mySeat}
