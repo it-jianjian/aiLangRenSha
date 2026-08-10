@@ -1,15 +1,16 @@
 """AI 狼人杀 — LLM 模型封装
 
 职责：
-1. create_llm() — 从配置创建 LangChain ChatModel 实例
+1. create_llm() — 从配置创建 LangChain ChatModel 实例，支持按座位号路由到不同模型
 2. MockWerewolfLLM — 测试用 Mock LLM，返回合法结构化决策
 
 技术方案 §5.4 对应实现：
 - 统一使用 LangChain 的 BaseChatModel 抽象接口
-- OpenAI-compatible API 支持所有国产模型（Qwen/ChatGLM 等）
+- OpenAI-compatible API 支持所有国产模型（Qwen/ChatGLM/GLM-5.2 等）
 - Mock 模型用于测试和 LLM 不可用时的降级
+- 多实例支持：每个座位可绑定独立模型（硅基流动等聚合平台）
 
-调用链：AgentGraph(LLMCallNode) → create_llm() → ChatOpenAI → API
+调用链：AgentGraph(LLMCallNode) → create_llm(seat_number) → ChatOpenAI → API
                                    → MockWerewolfLLM → 合法结构化决策
 """
 
@@ -29,40 +30,56 @@ logger = logging.getLogger(__name__)
 
 
 def create_llm(
+    seat_number: Optional[int] = None,
     model_name: Optional[str] = None,
     temperature: Optional[float] = None,
 ) -> BaseChatModel:
     """从配置创建 LangChain ChatModel 实例
 
     参数:
-        model_name: 模型名称（默认从 config.llm_model_name 读取）
-        temperature: 温度参数（默认从 config.llm_temperature 读取）
+        seat_number: 座位号（1~12），用于查找多实例配置
+        model_name: 模型名称（覆盖 seat_number 查找结果）
+        temperature: 温度参数（覆盖 seat_number 查找结果）
 
     返回:
-        BaseChatModel 实例（ChatOpenAI，兼容所有 OpenAI-compatible API）
+        BaseChatModel 实例
 
-    说明:
-        所有国产模型（Qwen/ChatGLM/GLM-4 等）都提供 OpenAI-compatible 端点
-        统一使用 langchain_openai.ChatOpenAI 调用，通过 base_url 切换后端
-
-        如果 API Key 未配置或为占位符，自动降级为 MockWerewolfLLM，
-        使游戏可以在无 LLM 服务的情况下运行（用于测试和开发）
+    查找优先级：
+        1. 显式传入 model_name → 直接使用该模型
+        2. 传入 seat_number → 查找 settings 中该座位的独立配置
+        3. 回退到默认 LLM（settings.llm_model_name）
+        4. API Key 未配置 → 降级为 MockWerewolfLLM
     """
     settings = get_settings()
     api_key = settings.llm_api_key
 
-    # API Key 未配置或为占位符 → 使用 Mock LLM
-    if not api_key or api_key in ("your-api-key-here", "your-deepseek-api-key-here", "not-set", ""):
-        logger.warning("[LLM] API Key 未配置，使用 MockWerewolfLLM 降级运行")
-        return MockWerewolfLLM(decision_type="kill")  # decision_type 会被 run_agent 动态设置
+    # 确定最终使用的模型和温度
+    final_model = model_name
+    final_temp = temperature
+
+    if not final_model and seat_number:
+        inst = settings.get_llm_instance(seat_number)
+        if inst:
+            final_model = inst.model_name
+            final_temp = inst.temperature
+
+    if not final_model:
+        final_model = settings.llm_model_name
+    if final_temp is None:
+        final_temp = settings.llm_temperature
+
+    # API Key 未配置 → Mock 降级
+    if not api_key or api_key in ("your-api-key-here", "your-deepseek-api-key-here", "not-set", "", "填你的硅基流动APIKey"):
+        logger.warning(f"[LLM] API Key 未配置，使用 MockWerewolfLLM 降级运行 (seat={seat_number})")
+        return MockWerewolfLLM(decision_type="kill")
 
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
-        model=model_name or settings.llm_model_name,
+        model=final_model,
         base_url=settings.llm_base_url,
         api_key=api_key,
-        temperature=temperature if temperature is not None else settings.llm_temperature,
+        temperature=final_temp if final_temp is not None else settings.llm_temperature,
         timeout=settings.llm_timeout,
         max_retries=1,
         max_tokens=2048,
@@ -101,7 +118,6 @@ class MockWerewolfLLM(BaseChatModel):
 
         从 messages 中解析游戏状态，生成合法的结构化决策
         """
-        # ─── 从 SystemMessage 中解析游戏状态 ───
         alive_seats, own_seat, werewolf_companions = self._parse_game_state(messages)
 
         decision_data = self._mock_decision(alive_seats, own_seat, werewolf_companions)
@@ -169,12 +185,10 @@ class MockWerewolfLLM(BaseChatModel):
             - verify: 不会选到已死亡玩家或自己
             - poison/vote: 不会选到已死亡玩家或自己
         """
-        # 计算合法目标列表（排除自己）
         other_alive = [s for s in alive_seats if s != own_seat] if own_seat else alive_seats
 
         match self.decision_type:
             case "kill":
-                # 排除狼人同伴
                 targets = [s for s in other_alive if s not in werewolf_companions]
                 target = random.choice(targets) if targets else (other_alive[0] if other_alive else 1)
                 return {
@@ -196,7 +210,6 @@ class MockWerewolfLLM(BaseChatModel):
                 }
 
             case "poison":
-                # 排除自己，可以选 null（不用毒药）
                 choices = other_alive + [None] if other_alive else [None]
                 target = random.choice(choices)
                 return {

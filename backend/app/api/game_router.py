@@ -155,6 +155,11 @@ async def get_game(
     is_playing = game.status == GameStatus.PLAYING
     is_finished = game.status == GameStatus.FINISHED
     roles_visible = is_finished or (is_playing and game.mode == "pure_ai")
+
+    # 获取每个座位对应的模型名称
+    from app.config import get_settings as _get_settings
+    settings = _get_settings()
+
     players = [
         PlayerInfo(
             seat_number=p.seat_number,
@@ -162,6 +167,7 @@ async def get_game(
             player_type=p.player_type,
             role=p.role if roles_visible else None,
             is_alive=p.is_alive,
+            llm_model_name=_player_model_name(p.seat_number, settings),
         ).model_dump()
         for p in game.players
     ]
@@ -170,8 +176,7 @@ async def get_game(
     model_name = config.get("model_name")
     # 未配置或为 schema 默认占位符 → 回退到实际运行的模型
     if not model_name or model_name == "qwen-plus":
-        from app.config import get_settings
-        model_name = get_settings().llm_model_name
+        model_name = settings.llm_model_name
 
     detail = GameDetail(
         game_id=game.id, mode=game.mode, status=game.status,
@@ -182,6 +187,14 @@ async def get_game(
         model_name=model_name,
     )
     return ApiResponse(data=detail.model_dump())
+
+
+def _player_model_name(seat_number: int, settings) -> str:
+    """返回指定座位使用的模型名称"""
+    inst = settings.get_llm_instance(seat_number)
+    if inst:
+        return inst.model_name
+    return settings.llm_model_name
 
 
 @router.get("/{game_id}/events", response_model=ApiResponse)

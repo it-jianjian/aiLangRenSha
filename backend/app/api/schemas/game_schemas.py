@@ -83,11 +83,12 @@ class CreateGameRequest(BaseModel):
 
 class PlayerInfo(BaseModel):
     """玩家信息（在对局详情中返回）"""
-    seat_number: int                            # 座位号 1-6
+    seat_number: int                            # 座位号 1-12
     player_name: str                            # 显示名称
     player_type: str                            # human / ai
     role: Optional[str] = None                  # 角色（仅对自己可见 或 游戏结束后可见）
     is_alive: bool = True                       # 是否存活
+    llm_model_name: str = ""                    # 该 AI 玩家使用的模型名称
 
 
 class GameSummary(BaseModel):
@@ -250,6 +251,7 @@ class PlayerInfo(BaseModel):
     player_type: str  # human / ai
     role: Optional[str] = None  # 仅对自己可见或游戏结束后可见
     is_alive: bool = True
+    llm_model_name: str = ""  # 该 AI 玩家使用的模型名称
 
 
 class GameSummary(BaseModel):

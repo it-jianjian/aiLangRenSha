@@ -36,6 +36,7 @@ export interface PlayerInfo {
   player_type: 'human' | 'ai'
   role?: string | null
   is_alive: boolean
+  llm_model_name?: string  // 该 AI 玩家使用的模型名称
 }
 
 export interface GameSummary {

@@ -86,6 +86,21 @@ export default function PlayerTable({
   const posMap = is6 ? SEAT_POS_6 : SEAT_POS_12
   const isPureAI = gameMode === 'pure_ai'
 
+  /** 提取模型名简短显示 */
+  const shortModelName = (fullName: string) => {
+    if (!fullName) return ''
+    const parts = fullName.split('/')
+    const name = parts.length > 1 ? parts[1] : parts[0]
+    // 取第一个 '-' 之前的部分作为短名
+    const dashIdx = name.indexOf('-')
+    if (dashIdx === -1) return name
+    const base = name.slice(0, dashIdx)
+    const suffix = name.slice(dashIdx + 1)
+    // 如果后缀很短（版本号），保留；如果是参数量/B/Instruct 等，丢弃
+    if (/^v?\d/i.test(suffix) && suffix.length <= 6) return `${base}-${suffix}`
+    return base
+  }
+
   // ─── 拖拽 + 缩放状态 ───
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
@@ -178,7 +193,10 @@ export default function PlayerTable({
             >
               {/* 圆形头像 */}
               <div className="round-card__avatar">
-                <Tooltip title={isPureAI && modelName ? `${p.player_name} · ${modelName}` : p.player_name}>
+                <Tooltip title={(() => {
+                  const pModel = p.llm_model_name || (isPureAI ? modelName : '')
+                  return pModel ? `${p.player_name} · ${pModel}` : p.player_name
+                })()}>
                   <Avatar
                     size={36}
                     style={{
@@ -221,12 +239,15 @@ export default function PlayerTable({
                 )}
               </div>
 
-              {/* 纯AI模式：显示模型名 */}
-              {isPureAI && modelName && revealedRole && (
-                <div className="round-card__model" title={`模型: ${modelName}`}>
-                  {modelName.split('-')[0].split('_')[0]}
-                </div>
-              )}
+              {/* 纯AI模式：显示该玩家使用的模型名 */}
+              {(() => {
+                const pModel = p.llm_model_name || (isPureAI ? modelName : '')
+                return pModel && revealedRole ? (
+                  <div className="round-card__model" title={`模型: ${pModel}`}>
+                    {shortModelName(pModel)}
+                  </div>
+                ) : null
+              })()}
 
               {/* 死亡蒙层 */}
               {!p.is_alive && <div className="round-card__death-overlay" />}

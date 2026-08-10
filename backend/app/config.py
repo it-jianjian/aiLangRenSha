@@ -5,10 +5,19 @@
 优先级：环境变量 > .env 文件 > 代码中的默认值
 """
 
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@dataclass
+class LlmInstance:
+    """单个 LLM 实例配置"""
+    model_name: str
+    temperature: float = 0.7
+    timeout: int = 60
 
 
 class Settings(BaseSettings):
@@ -26,56 +35,82 @@ class Settings(BaseSettings):
     )
 
     # ─── 数据库配置 ──────────────────────────────────────────
-    # 连接串格式: sqlite+aiosqlite:///./data/werewolf.db
-    # - sqlite: 使用 SQLite 数据库（MVP 阶段够用，后续可切换 PostgreSQL）
-    # - +aiosqlite: 异步驱动，让 SQLAlchemy 的 async 模式能在 SQLite 上工作
-    # - ///./data/werewolf.db: 相对路径，数据文件在 backend/data/ 目录下
     database_url: str = "sqlite+aiosqlite:///./data/werewolf.db"
 
-    # ─── LLM 模型配置 ────────────────────────────────────────
-    # API Key: 模型服务的密钥（如 DashScope API Key），从 .env 读取，不硬编码
+    # ─── LLM 默认配置（所有玩家共用，向后兼容） ──────────────────
     llm_api_key: str = ""
-    # API 地址: DeepSeek 提供 OpenAI-compatible 端点
-    # 官网: https://platform.deepseek.com/
-    llm_base_url: str = "https://api.deepseek.com/v1"
-    # 模型名称: deepseek-chat (V3对话) / deepseek-reasoner (R1推理)
-    llm_model_name: str = "deepseek-chat"
-    # 温度参数: 控制 LLM 输出随机性，0.1=最确定, 2.0=最随机，0.7 适合对话场景
+    llm_base_url: str = "https://api.siliconflow.cn/v1"
+    llm_model_name: str = "Qwen/Qwen3.5-Instruct"
     llm_temperature: float = 0.7
-    # 超时时间: 单次 LLM 调用最大等待秒数，超时后触发重试或降级
-    llm_timeout: int = 60
+    llm_timeout: int = 30
+
+    # ─── 多实例 LLM 配置（每个座位独立模型） ────────────────────
+    # 座位1~12 各自的模型和温度（共用同一个 API Key + Base URL）
+    llm_inst_1_model: str = ""
+    llm_inst_1_temperature: float = 0.7
+    llm_inst_2_model: str = ""
+    llm_inst_2_temperature: float = 0.7
+    llm_inst_3_model: str = ""
+    llm_inst_3_temperature: float = 0.7
+    llm_inst_4_model: str = ""
+    llm_inst_4_temperature: float = 0.7
+    llm_inst_5_model: str = ""
+    llm_inst_5_temperature: float = 0.7
+    llm_inst_6_model: str = ""
+    llm_inst_6_temperature: float = 0.7
+    llm_inst_7_model: str = ""
+    llm_inst_7_temperature: float = 0.7
+    llm_inst_8_model: str = ""
+    llm_inst_8_temperature: float = 0.7
+    llm_inst_9_model: str = ""
+    llm_inst_9_temperature: float = 0.7
+    llm_inst_10_model: str = ""
+    llm_inst_10_temperature: float = 0.7
+    llm_inst_11_model: str = ""
+    llm_inst_11_temperature: float = 0.7
+    llm_inst_12_model: str = ""
+    llm_inst_12_temperature: float = 0.7
 
     # ─── CORS 跨域配置 ───────────────────────────────────────
-    # 允许哪些前端域名访问后端 API（逗号分隔多个）
-    # - localhost:3000: Vite 默认开发服务器端口
-    # - localhost:5173: Vite 新版默认端口
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 
     # ─── 服务器配置 ──────────────────────────────────────────
-    host: str = "0.0.0.0"                       # 监听地址，0.0.0.0 表示所有网卡
-    port: int = 8000                            # 监听端口
+    host: str = "0.0.0.0"
+    port: int = 8000
 
-    # ─── 属性方法（计算派生值） ──────────────────────────────
+    # ─── 属性方法 ────────────────────────────────────────────
 
     @property
     def cors_origins_list(self) -> list[str]:
-        """将逗号分隔的 CORS 源字符串解析为列表
-
-        FastAPI 的 CORSMiddleware 需要 list[str] 格式，这里做转换
-        例: "http://a.com,http://b.com" → ["http://a.com", "http://b.com"]
-        """
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
     def data_dir(self) -> Path:
-        """获取数据目录路径，不存在则自动创建
-
-        SQLite 数据库文件存放在这个目录下
-        首次启动时如果目录不存在，会自动创建（mkdir parents=True）
-        """
         d = Path("./data")
-        d.mkdir(parents=True, exist_ok=True)    # parents=True 递归创建父目录
+        d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def get_llm_instance(self, seat_number: int) -> LlmInstance | None:
+        """根据座位号返回对应的 LLM 实例配置
+
+        如果该座位没有独立配置，返回 None（调用方应回退到默认配置）
+        """
+        model_attr = f"llm_inst_{seat_number}_model"
+        temp_attr = f"llm_inst_{seat_number}_temperature"
+        model = getattr(self, model_attr, "")
+        if not model:
+            return None
+        temp = getattr(self, temp_attr, self.llm_temperature)
+        return LlmInstance(model_name=model, temperature=temp, timeout=self.llm_timeout)
+
+    def get_llm_instances_map(self) -> dict[int, LlmInstance]:
+        """返回所有座位号 → LLM 实例的映射（仅包含有配置的座位）"""
+        result = {}
+        for seat in range(1, 13):
+            inst = self.get_llm_instance(seat)
+            if inst:
+                result[seat] = inst
+        return result
 
 
 @lru_cache
