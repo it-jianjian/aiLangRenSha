@@ -35,6 +35,10 @@ sqlalchemy>=2.0.0,<3.0.0
 alembic>=1.13.0,<2.0.0
 # aiosqlite: SQLAlchemy async 模式的 SQLite 异步驱动，让 SQLite 支持异步读写
 aiosqlite>=0.20.0,<1.0.0
+# aiomysql: MySQL 的 async 驱动，生产环境推荐用 MySQL 替代 SQLite
+aiomysql>=0.2.0,<1.0.0
+# pymysql: MySQL 同步驱动（alembic 迁移等场景需要）
+pymysql>=1.1.0,<2.0.0
 
 # ─── WebSocket ─────────────────────────────────────────────
 # websockets: Python WebSocket 库，FastAPI 内部用它处理 WS 连接
