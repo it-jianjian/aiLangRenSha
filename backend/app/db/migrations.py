@@ -24,7 +24,8 @@ def _schema_matches_metadata(engine) -> bool:
 
 def upgrade_database(database_url: str) -> None:
     """空库标记当前结构；历史库执行增量迁移，失败即阻断应用启动。"""
-    sync_url = database_url.replace("+aiosqlite", "")
+    # 异步驱动 → 同步驱动
+    sync_url = database_url.replace("+aiosqlite", "").replace("+aiomysql", "+pymysql")
     backend_dir = Path(__file__).resolve().parents[2]
     config = Config(str(backend_dir / "alembic.ini"))
     config.set_main_option("script_location", str(backend_dir / "alembic"))

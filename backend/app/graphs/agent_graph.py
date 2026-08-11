@@ -45,7 +45,7 @@ def _get_sync_engine():
     from app.config import get_settings
     settings = get_settings()
     # 将 async URL 转为 sync URL
-    sync_url = settings.database_url.replace("+aiosqlite", "")
+    sync_url = settings.database_url.replace("+aiosqlite", "").replace("+aiomysql", "+pymysql")
     from sqlalchemy import create_engine
     _sync_engine = create_engine(
         sync_url,
