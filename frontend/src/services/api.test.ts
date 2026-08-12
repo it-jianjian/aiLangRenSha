@@ -220,4 +220,41 @@ describe('apiService', () => {
       expect(result.role_mapping['1']).toBe('werewolf')
     })
   })
+
+  describe('getPendingAction', () => {
+    it('getPendingAction_shouldSendPlayerTokenHeaderAndUnwrapAction', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValue({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            action: {
+              action_type: 'save', seat: 5, role: 'witch',
+              allowed_target_seats: [1, 2, 3], last_target: null, can_skip: true,
+              extra: { night_kill_target: 3, save_available: true, poison_available: false },
+            },
+          },
+        },
+      })
+
+      const result = await apiService.getPendingAction('game-1', 'player-token')
+
+      expect(axiosClient.get).toHaveBeenCalledWith(
+        '/games/game-1/pending_action',
+        { headers: { 'X-Player-Token': 'player-token' } },
+      )
+      expect(result.action.action_type).toBe('save')
+      expect(result.action.extra.night_kill_target).toBe(3)
+    })
+
+    it('getPendingAction_shouldReturnNullActionWhenNothingPending', async () => {
+      vi.spyOn(axiosClient, 'get').mockResolvedValue({
+        data: { code: 0, message: 'ok', data: { action: null } },
+      })
+
+      const result = await apiService.getPendingAction('game-1', 'player-token')
+
+      expect(result.action).toBeNull()
+    })
+  })
 })

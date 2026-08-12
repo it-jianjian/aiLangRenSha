@@ -7,6 +7,9 @@
 4. 管理应用生命周期（启动时自动建表）
 
 启动命令: uvicorn app.main:app --host 0.0.0.0 --port 8000
+--ws-ping-interval 20 --ws-ping-timeout 20
+（ws-ping 为协议层心跳，配合应用层 {"type": "ping"} 心跳，
+防止云服务器反向代理/负载均衡因空闲超时断开 WebSocket）
 """
 
 from contextlib import asynccontextmanager
@@ -57,7 +60,13 @@ async def lifespan(app: FastAPI):
             "启动时终止了 %s 个无法恢复的 playing 对局", terminated
         )
 
+    # 启动 WebSocket 应用层心跳：周期性 ping 所有连接，顶住代理空闲超时并提前清理死连接
+    from app.api.ws_handler import ws_manager
+    ws_manager.start_heartbeat()
+
     yield  # ← 应用在此处开始接受请求，关闭时继续执行下方
+
+    await ws_manager.stop_heartbeat()
 
 
 def create_app() -> FastAPI:

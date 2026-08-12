@@ -80,6 +80,12 @@ export const apiService = {
     return unwrap(res)
   },
 
+  /** 查询当前等待该人类玩家提交的操作提示（WS 断线重连 / 轮询兜底恢复用） */
+  async getPendingAction(gameId: string, playerToken: string): Promise<{ action: any | null }> {
+    const res = await client.get(`/games/${gameId}/pending_action`, { headers: { 'X-Player-Token': playerToken } })
+    return unwrap(res)
+  },
+
   /** 开始对局 */
   async startGame(gameId: string, ownerToken?: string): Promise<{ game_id: string; status: string }> {
     const res = await client.post(`/games/${gameId}/start`, {}, ownerToken ? { headers: { 'X-Owner-Token': ownerToken } } : undefined)

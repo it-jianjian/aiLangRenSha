@@ -97,6 +97,35 @@ export default function GamePage() {
     }
     applyMessageRef.current = applyMessage
 
+    // 恢复等待中的人类操作提示：human_action_prompt 推送丢失时兜底，防止对局卡死
+    // （首次进入页面恰好轮到自己操作、或 WS 断线窗口内推送丢失时都能恢复）
+    const restorePendingAction = async () => {
+      const token = sessionStorage.getItem(`game-player-token:${gameId}`)
+      if (!token) return
+      try {
+        const { action } = await apiService.getPendingAction(gameId, token)
+        if (!action) return
+        store.setActionPrompt({
+          actionType: action.action_type,
+          seat: action.seat,
+          role: action.role,
+          allowedTargetSeats: action.allowed_target_seats || [],
+          lastTarget: action.last_target ?? null,
+          canSkip: !!action.can_skip,
+        })
+        // 女巫专属：恢复"今晚谁被杀 / 药水是否可用"面板信息
+        if (action.action_type === 'save' && action.extra) {
+          setWitchInfo({
+            night_kill_target: action.extra.night_kill_target ?? null,
+            save_available: !!action.extra.save_available,
+            poison_available: !!action.extra.poison_available,
+          })
+        }
+      } catch {
+        // 对局未开始 / 非人类玩家时接口会报错，静默忽略即可
+      }
+    }
+
     apiService.getGame(gameId).then((detail: GameDetail) => {
       store.setGame(detail.game_id, detail.mode, detail.model_name)
       store.setPlayers(detail.players)
@@ -120,12 +149,25 @@ export default function GamePage() {
       return apiService.getPublicEvents(gameId)
     }).then((snapshot) => {
       snapshot?.events.forEach(applyMessage)
+      return restorePendingAction()
     }).catch(() => {
       message.error('加载对局失败')
     }).finally(() => setLoading(false))
 
     // 连接 WebSocket
     wsService.connect(gameId, sessionStorage.getItem(`game-player-token:${gameId}`) || undefined)
+
+    // HTTP 轮询兜底：每 3 秒拉一次新事件，防止 WebSocket 断开漏消息
+    const pollInterval = setInterval(async () => {
+      try {
+        const snapshot = await apiService.getPublicEvents(gameId!)
+        if (snapshot?.events?.length) {
+          for (const msg of snapshot.events) {
+            applyMessage(msg)
+          }
+        }
+      } catch { /* 忽略 */ }
+    }, 3000)
 
     // WebSocket 消息处理（定义在 useEffect 内部，避免闭包陷阱）
     const handleWSMessage = (msg: WSMessage) => {
@@ -187,8 +229,22 @@ export default function GamePage() {
 
     const unsubscribe = wsService.onMessage(handleWSMessage)
 
+    // 断线重连后对账：补偿断线窗口内错过的公共事件 + 恢复等待中的操作提示
+    const resyncAfterReconnect = async () => {
+      try {
+        const snapshot = await apiService.getPublicEvents(gameId)
+        snapshot?.events.forEach(applyMessage)
+        await restorePendingAction()
+      } catch (e) {
+        console.warn('[Game] 重连对账失败，等待下次重连再试', e)
+      }
+    }
+    const unsubscribeReconnect = wsService.onReconnect(() => { void resyncAfterReconnect() })
+
     return () => {
+      clearInterval(pollInterval)
       unsubscribe()
+      unsubscribeReconnect()
       wsService.disconnect()
       store.reset()
     }

@@ -13,6 +13,11 @@
 }
 
 调用链：record_event → ws_manager.broadcast → WebSocket → 前端
+
+云环境可用性设计：
+- 应用层心跳：每 25s 向所有连接发送 {"type": "ping"}，顶住反向代理/云 LB 的空闲超时
+  （如 Nginx 默认 60s 断连），并在广播前提前发现死连接（半开 TCP 只能靠应用层消息探测）。
+- 发送超时：单次 send_text 最多等待 5s，防止一个慢/死连接阻塞整局广播。
 """
 
 import asyncio
@@ -24,6 +29,11 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
+
+# 应用层心跳间隔（秒）：必须小于反向代理空闲超时（Nginx 默认 60s）
+HEARTBEAT_INTERVAL_SECONDS = 25.0
+# 单次发送超时（秒）：超时即判定连接已死并移除
+SEND_TIMEOUT_SECONDS = 5.0
 
 
 def extract_authentication_token(message_text: str) -> str | None:
@@ -123,10 +133,56 @@ class ConnectionManager:
                 manager.disconnect(websocket, game_id)
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+        send_timeout: float = SEND_TIMEOUT_SECONDS,
+    ):
         # {game_id: [WebSocket, WebSocket, ...]}
         self._connections: dict[str, list[WebSocket]] = {}
         self._player_seats: dict[tuple[str, int], int] = {}
+        self._heartbeat_interval = heartbeat_interval
+        self._send_timeout = send_timeout
+        self._heartbeat_task: asyncio.Task | None = None
+
+    # ─── 应用层心跳 ───────────────────────────────────────
+
+    def start_heartbeat(self):
+        """启动心跳任务（幂等，需在运行中的事件循环内调用）"""
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def stop_heartbeat(self):
+        """停止心跳任务（应用关闭时调用）"""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self):
+        """周期性向所有连接发送应用层 ping"""
+        while True:
+            await asyncio.sleep(self._heartbeat_interval)
+            await self._ping_all_connections()
+
+    async def _ping_all_connections(self):
+        """向所有连接发送 ping；发送失败/超时的连接立即移除"""
+        payload = json.dumps(
+            {"type": "ping", "timestamp": datetime.now().isoformat()},
+            ensure_ascii=False,
+        )
+        for game_id in list(self._connections):
+            for ws in list(self._connections.get(game_id, [])):
+                try:
+                    await asyncio.wait_for(ws.send_text(payload), timeout=self._send_timeout)
+                except Exception as e:
+                    logger.info(f"[WS] 心跳发送失败，移除连接: game={game_id}, {e}")
+                    self.disconnect(ws, game_id)
+
+    # ─── 连接管理 ─────────────────────────────────────────
 
     async def connect(self, websocket: WebSocket, game_id: str):
         """接受匿名 WebSocket；认证成功前不绑定人类座位。"""
@@ -170,9 +226,10 @@ class ConnectionManager:
         text = json.dumps(message, ensure_ascii=False)
         dead_connections = []
 
-        for ws in self._connections[game_id]:
+        # 遍历快照：发送超时/失败只影响当前连接，不阻塞向其他连接的广播
+        for ws in list(self._connections[game_id]):
             try:
-                await ws.send_text(text)
+                await asyncio.wait_for(ws.send_text(text), timeout=self._send_timeout)
             except Exception as e:
                 logger.warning(f"[WS] 发送失败: {e}")
                 dead_connections.append(ws)
@@ -189,7 +246,10 @@ class ConnectionManager:
             payload = dict(message)
             payload.setdefault("timestamp", datetime.now().isoformat())
             try:
-                await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+                await asyncio.wait_for(
+                    websocket.send_text(json.dumps(payload, ensure_ascii=False)),
+                    timeout=self._send_timeout,
+                )
             except Exception:
                 self.disconnect(websocket, game_id)
 

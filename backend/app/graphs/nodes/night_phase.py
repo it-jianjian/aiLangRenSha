@@ -413,7 +413,12 @@ async def night_witch_node(state: GameFlowState) -> dict:
             state["game_id"], "save",
             {"seat_number": witch["seat_number"], "player_name": witch["player_name"], "role": witch["role"],
              "phase": "night", "allowed_target_seats": alive_other_seats,
-             "empty_target_actions": ["save", "skip"]},
+             "empty_target_actions": ["save", "skip"],
+             "extra": {
+                 "night_kill_target": state.get("night_kill_target"),
+                 "save_available": save_available,
+                 "poison_available": poison_available,
+             }},
         )
         action = human_action.get("action_type", "skip")
         target = human_action.get("target_seat")

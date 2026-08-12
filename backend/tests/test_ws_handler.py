@@ -230,3 +230,65 @@ async def test_invalid_token_returns_none(tmp_path):
         assert binding is None
     finally:
         await engine.dispose()
+
+
+# ================================================================
+# 应用层心跳 + 发送超时（云环境反代空闲断连防护）
+# ================================================================
+
+class TestHeartbeat:
+    """应用层心跳与发送超时测试"""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_removes_dead_connection(self):
+        """心跳 ping 发送失败的连接应立即从连接表中移除"""
+        import asyncio as _asyncio
+        manager = ConnectionManager(heartbeat_interval=0.05, send_timeout=0.1)
+        dead_ws = AsyncMock()
+        dead_ws.send_text.side_effect = RuntimeError("connection reset")
+        manager._connections["game-001"] = [dead_ws]
+
+        manager.start_heartbeat()
+        await _asyncio.sleep(0.15)  # 至少触发一轮心跳
+        await manager.stop_heartbeat()
+
+        assert manager.connection_count("game-001") == 0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_keeps_alive_connection(self):
+        """心跳 ping 成功时连接保留，且收到的是 ping 载荷"""
+        import asyncio as _asyncio
+        import json as _json
+        manager = ConnectionManager(heartbeat_interval=0.05, send_timeout=0.1)
+        ws = AsyncMock()
+        manager._connections["game-001"] = [ws]
+
+        manager.start_heartbeat()
+        await _asyncio.sleep(0.15)
+        await manager.stop_heartbeat()
+
+        assert manager.connection_count("game-001") == 1
+        sent = _json.loads(ws.send_text.call_args[0][0])
+        assert sent["type"] == "ping"
+
+    @pytest.mark.asyncio
+    async def test_broadcast_send_timeout_does_not_block_other_connections(self):
+        """慢连接发送超时应被移除，不拖慢其他连接的广播"""
+        import asyncio as _asyncio
+        manager = ConnectionManager(send_timeout=0.05)
+
+        async def _hanging_send(_text):
+            await _asyncio.sleep(5)  # 模拟 TCP 缓冲区满的死连接
+
+        slow_ws = AsyncMock()
+        slow_ws.send_text.side_effect = _hanging_send
+        fast_ws = AsyncMock()
+        manager._connections["game-001"] = [slow_ws, fast_ws]
+
+        await _asyncio.wait_for(
+            manager.broadcast("game-001", {"type": "test", "data": {}}),
+            timeout=2,
+        )
+
+        fast_ws.send_text.assert_called_once()
+        assert manager.connection_count("game-001") == 1  # 慢连接已被移除

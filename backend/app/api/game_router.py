@@ -8,6 +8,7 @@
   GET    /api/v1/games              — 对局列表（分页）
   GET    /api/v1/games/{id}         — 对局详情
   POST   /api/v1/games/{id}/start   — 开始对局
+  GET    /api/v1/games/{id}/pending_action — 查询等待中的人类操作提示（断线恢复用）
   POST   /api/v1/games/{id}/actions/night  — 夜晚行动（人类玩家）
   POST   /api/v1/games/{id}/actions/speech — 提交发言（人类玩家）
   POST   /api/v1/games/{id}/actions/vote   — 提交投票（人类玩家）
@@ -209,6 +210,26 @@ async def get_public_events(game_id: str, db: AsyncSession = Depends(get_db)):
             raise HTTPException(status_code=404, detail="对局不存在")
     public_events = [payload for event in events if (payload := to_public_event(event)) is not None]
     return ApiResponse(data={"events": public_events})
+
+
+@router.get("/{game_id}/pending_action", response_model=ApiResponse)
+async def get_pending_action(
+    game_id: str,
+    db: AsyncSession = Depends(get_db),
+    player_token: str = Header(..., alias="X-Player-Token"),
+):
+    """查询当前等待该人类玩家提交的操作提示
+
+    用途：WebSocket 断线重连或 HTTP 轮询兜底时恢复"轮到你了"提示，
+    避免 human_action_prompt 推送丢失导致游戏流程永久等待。
+
+    返回结构与 WebSocket 的 human_action_prompt 一致；
+    当前无等待操作或等待的不是该玩家时 action 为 null。
+    """
+    human_player = await _verify_human_player(game_id, player_token, db)
+    from app.services.human_action_bridge import human_bridge
+    action = human_bridge.get_pending_action(game_id, human_player.seat_number)
+    return ApiResponse(data={"action": action})
 
 
 # ─── 阵容配置（仅房主且仅 waiting） ────────────────────────

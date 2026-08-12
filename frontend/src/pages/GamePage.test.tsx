@@ -12,7 +12,7 @@ vi.mock('../services/api', () => ({
 }))
 
 vi.mock('../services/ws', () => ({
-  wsService: { connect: vi.fn(), disconnect: vi.fn(), onMessage: vi.fn(() => () => {}) },
+  wsService: { connect: vi.fn(), disconnect: vi.fn(), onMessage: vi.fn(() => () => {}), onReconnect: vi.fn(() => () => {}) },
 }))
 
 describe('GamePage', () => {

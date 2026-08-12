@@ -70,10 +70,14 @@ class HumanActionBridge:
         self._contexts[game_id] = {
             "action_type": action_type,
             "seat_number": player_info["seat_number"],
+            "player_name": player_info.get("player_name"),
             "role": player_info.get("role"),
             "phase": player_info.get("phase"),
+            "last_target": player_info.get("last_target"),
             "allowed_target_seats": set(player_info.get("allowed_target_seats", [])),
             "empty_target_actions": set(player_info.get("empty_target_actions", [])),
+            # 角色专属附加信息（如女巫的被杀目标/药水状态），用于断线恢复时完整还原操作面板
+            "extra": player_info.get("extra") or {},
         }
 
         # 通过 WebSocket 通知前端：轮到你了
@@ -89,6 +93,7 @@ class HumanActionBridge:
                     "allowed_target_seats": list(player_info.get("allowed_target_seats", [])),
                     "last_target": player_info.get("last_target"),
                     "can_skip": action_type in player_info.get("empty_target_actions", []),
+                    "extra": player_info.get("extra") or {},
                 },
             })
         except Exception as e:
@@ -105,7 +110,7 @@ class HumanActionBridge:
                 await event.wait()
             else:
                 await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.info(
                 f"[HumanBridge] 人类操作超时，按跳过继续: game={game_id} "
                 f"seat={player_info.get('seat_number')} type={action_type}"
@@ -159,6 +164,31 @@ class HumanActionBridge:
 
         self._actions[game_id] = action_data
         event.set()  # 唤醒等待中的 wait_for_action
+
+    def get_pending_action(self, game_id: str, seat_number: int) -> dict[str, Any] | None:
+        """查询指定座位当前等待中的操作提示（WS 断线重连 / HTTP 轮询兜底用）
+
+        返回与 WebSocket human_action_prompt 推送一致的数据载荷，
+        让重连后的客户端能恢复"轮到你了"的操作面板，避免对局永久等待。
+
+        返回:
+            None — 当前无等待操作，或等待中的操作不属于该座位
+            dict — {action_type, seat, player_name, role, allowed_target_seats,
+                    last_target, can_skip, extra}
+        """
+        context = self._contexts.get(game_id)
+        if not context or context["seat_number"] != seat_number:
+            return None
+        return {
+            "action_type": context["action_type"],
+            "seat": context["seat_number"],
+            "player_name": context.get("player_name"),
+            "role": context.get("role"),
+            "allowed_target_seats": sorted(context["allowed_target_seats"]),
+            "last_target": context.get("last_target"),
+            "can_skip": context["action_type"] in context["empty_target_actions"],
+            "extra": context.get("extra") or {},
+        }
 
     def is_waiting(self, game_id: str) -> bool:
         """检查指定对局是否正在等待人类操作"""
