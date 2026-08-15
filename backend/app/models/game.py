@@ -13,10 +13,17 @@
 """
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -148,6 +155,7 @@ class Game(Base):
     events = relationship("GameEvent", back_populates="game")
     messages = relationship("ChatMessage", back_populates="game")
     agent_logs = relationship("AgentLog", back_populates="game")
+    agent_steps = relationship("AgentStep", back_populates="game")
 
     # ─── 索引 ───
     __table_args__ = (
@@ -332,10 +340,37 @@ class AgentLog(Base):
     parsed_decision = Column(Text, nullable=True, comment="解析后的决策 JSON")
     is_fallback = Column(Boolean, nullable=False, default=False, comment="是否降级随机决策（超时或解析失败）")
     latency_ms = Column(Integer, nullable=True, comment="LLM 调用耗时毫秒数")
+    prompt_tokens = Column(Integer, nullable=True, comment="LLM 请求消耗的 prompt token 数")
+    completion_tokens = Column(Integer, nullable=True, comment="LLM 请求消耗的 completion token 数")
+    model_name = Column(String(64), nullable=True, comment="实际使用的模型名称")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     game = relationship("Game", back_populates="agent_logs")
+    steps = relationship("AgentStep", back_populates="agent_log", order_by="AgentStep.step_index")
 
     __table_args__ = (
         Index("idx_agent_logs_game_seat", "game_id", "seat_number"),  # 按局+座位查询
+    )
+
+
+class AgentStep(Base):
+    """ReAct Agent 步骤轨迹表 — 记录每次 ReAct 决策的完整 Thought/Action/Observation 轨迹
+
+    与 AgentLog 一对多关系：一次决策（AgentLog）包含多个步骤（AgentStep）。
+    """
+    __tablename__ = "agent_steps"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    agent_log_id = Column(String(36), ForeignKey("agent_logs.id"), nullable=False, comment="所属 AgentLog 记录")
+    game_id = Column(String(36), ForeignKey("games.id"), nullable=False, comment="冗余字段，便于按局查询")
+    step_index = Column(Integer, nullable=False, comment="步骤序号（0, 1, 2...）")
+    step_type = Column(String(16), nullable=False, comment="thought/tool_call/observation/final")
+    content = Column(Text, nullable=False, comment="步骤内容（推理文本/工具调用参数/观察结果/最终决策）")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    game = relationship("Game", back_populates="agent_steps")
+    agent_log = relationship("AgentLog", back_populates="steps")
+
+    __table_args__ = (
+        Index("idx_agent_steps_game_log", "game_id", "agent_log_id"),
     )

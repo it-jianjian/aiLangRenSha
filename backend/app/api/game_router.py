@@ -17,10 +17,11 @@
   前端请求 → API 路由（本文件）→ GameService（业务逻辑）→ ORM Model → 数据库
 """
 
+import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,12 +32,12 @@ from app.api.schemas.game_schemas import (
     GameSummary,
     NightActionRequest,
     PlayerInfo,
+    RosterUpdateRequest,
     SpeechRequest,
     VoteRequest,
-    RosterUpdateRequest,
 )
 from app.db.session import get_db
-from app.models.game import Game, GameEvent, GamePlayer, GameMode, GameStatus, PlayerType
+from app.models.game import Game, GameEvent, GameMode, GameStatus, PlayerType
 from app.services.game_service import GameService
 from app.services.public_events import to_public_event
 
@@ -61,19 +62,13 @@ async def create_game(
     """
     service = GameService(db)
 
-    # 检查是否有进行中的对局（MVP 限制同时只能 1 局）
-    active = await service.get_active_game()
-    if active:
-        # HTTP 409 Conflict: 资源冲突
-        raise HTTPException(status_code=409, detail="当前有对局进行中，请等待结束")
-
     # 混合模式必须提供玩家名称
     if request.mode == GameMode.MIXED and not request.player_name:
         # HTTP 400 Bad Request: 参数缺失
         raise HTTPException(status_code=400, detail="混合模式需要提供 player_name")
 
     game, owner_token, player_token = await service.create_game(request)
-    roster = __import__("json").loads(game.roster_json)
+    roster = json.loads(game.roster_json)
     return ApiResponse(data={"game_id": game.id, "mode": game.mode, "status": game.status,
                               "owner_token": owner_token, "player_count": game.player_count,
                               "player_token": player_token,
@@ -173,7 +168,7 @@ async def get_game(
         for p in game.players
     ]
 
-    config = __import__("json").loads(game.config_json) if game.config_json else {}
+    config = json.loads(game.config_json) if game.config_json else {}
     model_name = config.get("model_name")
     # 未配置或为 schema 默认占位符 → 回退到实际运行的模型
     if not model_name or model_name == "qwen-plus":
@@ -183,7 +178,7 @@ async def get_game(
         game_id=game.id, mode=game.mode, status=game.status,
         current_round=game.total_rounds, winner=game.winner,
         end_reason=game.end_reason, players=players, player_count=game.player_count,
-        roster_type=game.roster_type, roster=__import__("json").loads(game.roster_json),
+        roster_type=game.roster_type, roster=json.loads(game.roster_json),
         roster_locked=game.roster_locked_at is not None,
         model_name=model_name,
     )
@@ -290,6 +285,10 @@ async def _verify_human_player(game_id: str, player_token: str, db: AsyncSession
 
     不通过时抛出 403 Forbidden
     """
+    from app.services.human_action_bridge import _check_auth_rate_limit, _record_auth_failure
+
+    _check_auth_rate_limit(game_id)
+
     result = await db.execute(
         select(Game)
         .options(selectinload(Game.players))
@@ -310,6 +309,7 @@ async def _verify_human_player(game_id: str, player_token: str, db: AsyncSession
     if not human_player:
         raise HTTPException(status_code=403, detail="该对局无人类玩家")
     if not player_token or not GameService._token_hash(player_token) == human_player.access_token_hash:
+        _record_auth_failure(game_id)
         raise HTTPException(status_code=403, detail="人类玩家凭据无效")
     return human_player
 

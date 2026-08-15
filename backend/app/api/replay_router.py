@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.schemas.game_schemas import ApiResponse, ReplayData, ReplayStep
 from app.db.session import get_db
-from app.models.game import Game, GameEvent, GamePlayer
+from app.models.game import Game, GameEvent
 
 router = APIRouter()
 

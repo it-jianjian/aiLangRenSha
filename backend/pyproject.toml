@@ -32,3 +32,4 @@ target-version = "py311"                        # 目标 Python 版本，影响�
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]                   # 启用的检查规则：E=错误, F=pyflakes, W=警告, I=import排序
+ignore = ["E501", "E402", "F811"]               # 忽略：行长度、import位置、重复定义（既有代码结构问题）

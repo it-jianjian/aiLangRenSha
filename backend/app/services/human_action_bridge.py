@@ -16,11 +16,47 @@
 
 import asyncio
 import logging
-from typing import Any, Optional
+import time
+from collections import defaultdict
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 TARGETED_ACTIONS = {"kill", "verify", "poison", "guard", "hunter_shoot", "vote"}
+
+# S1: 认证失败限流 — 按 game_id 记录失败次数，超限封禁 60s
+_auth_failures: dict[str, list[float]] = defaultdict(list)
+_AUTH_BAN_WINDOW = 60  # 封禁时长（秒）
+_AUTH_MAX_FAILURES = 5  # 每分钟最大失败次数
+
+
+def _check_auth_rate_limit(game_id: str) -> None:
+    """S1: 检查认证限流，超限抛出 HTTPException"""
+    now = time.monotonic()
+    window = now - _AUTH_BAN_WINDOW
+    _auth_failures[game_id] = [t for t in _auth_failures[game_id] if t > window]
+    if len(_auth_failures[game_id]) >= _AUTH_MAX_FAILURES:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=429, detail="认证失败次数过多，请稍后重试")
+
+
+def _record_auth_failure(game_id: str) -> None:
+    """S1: 记录一次认证失败"""
+    _auth_failures[game_id].append(time.monotonic())
+
+# B1: 各行动类型默认超时（秒），超时按跳过继续，防止整局永久悬挂
+DEFAULT_TIMEOUTS = {
+    "kill": 120,
+    "verify": 120,
+    "save": 120,
+    "poison": 120,
+    "guard": 120,
+    "vote": 120,
+    "speech": 180,
+    "last_words": 120,
+    "hunter_shoot": 60,
+    "skip": 60,
+}
 
 
 class HumanActionBridge:
@@ -38,12 +74,15 @@ class HumanActionBridge:
     """
 
     def __init__(self):
-        # game_id → asyncio.Event（等待人类操作时设置，API 提交后 set）
-        self._events: dict[str, asyncio.Event] = {}
-        # game_id → 操作数据（API 提交时写入，游戏节点读取后清除）
-        self._actions: dict[str, dict[str, Any]] = {}
-        # game_id → 服务端声明的当前行动上下文；客户端无权覆盖。
-        self._contexts: dict[str, dict[str, Any]] = {}
+        # (game_id, seat) → asyncio.Event（等待人类操作时设置，API 提交后 set）
+        # B2: 从单 game_id 槽位扩展为 (game_id, seat) 多槽位，支持同局多人类并发
+        self._events: dict[tuple[str, int], asyncio.Event] = {}
+        # (game_id, seat) → 操作数据
+        self._actions: dict[tuple[str, int], dict[str, Any]] = {}
+        # (game_id, seat) → 服务端声明的当前行动上下文
+        self._contexts: dict[tuple[str, int], dict[str, Any]] = {}
+        # S2: 已提交待消费的键集合，防止同一窗口重复提交覆盖
+        self._submitted: set[tuple[str, int]] = set()
 
     async def wait_for_action(
         self,
@@ -66,8 +105,9 @@ class HumanActionBridge:
             通过 WebSocket 向已认证绑定座位定向发送 human_action_prompt
         """
         event = asyncio.Event()
-        self._events[game_id] = event
-        self._contexts[game_id] = {
+        key = (game_id, player_info["seat_number"])
+        self._events[key] = event
+        self._contexts[key] = {
             "action_type": action_type,
             "seat_number": player_info["seat_number"],
             "player_name": player_info.get("player_name"),
@@ -104,21 +144,23 @@ class HumanActionBridge:
             f"seat={player_info.get('seat_number')} type={action_type}"
         )
 
-        # 阻塞等待，直到 API 提交；可选超时用于死亡后的可选动作，避免整局永久悬挂。
+        # B1: 未显式指定超时时使用行动类型默认超时，防止整局永久悬挂
+        if timeout_seconds is None:
+            timeout_seconds = DEFAULT_TIMEOUTS.get(action_type, 120)
+
+        # 阻塞等待，直到 API 提交；超时按跳过继续
         try:
-            if timeout_seconds is None:
-                await event.wait()
-            else:
-                await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+            await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             logger.info(
                 f"[HumanBridge] 人类操作超时，按跳过继续: game={game_id} "
                 f"seat={player_info.get('seat_number')} type={action_type}"
             )
         finally:
-            action = self._actions.pop(game_id, {})
-            self._events.pop(game_id, None)
-            self._contexts.pop(game_id, None)
+            action = self._actions.pop(key, {})
+            self._events.pop(key, None)
+            self._contexts.pop(key, None)
+            self._submitted.discard(key)  # S2: 消费后清除提交标记
 
         logger.info(
             f"[HumanBridge] 收到人类操作: game={game_id} "
@@ -134,14 +176,17 @@ class HumanActionBridge:
             game_id: 对局 ID
             action_data: 操作数据（如 {"target_seat": 3} 或 {"content": "发言文本"}）
         """
-        event = self._events.get(game_id)
-        context = self._contexts.get(game_id)
+        key = (game_id, actor_seat)
+        # S2: 已提交过则拒绝重复提交
+        if key in self._submitted:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="该操作已提交，请勿重复提交")
+
+        event = self._events.get(key)
+        context = self._contexts.get(key)
         if not event or not context:
             from fastapi import HTTPException
             raise HTTPException(status_code=409, detail="当前没有等待中的人类操作")
-        if actor_seat != context["seat_number"]:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="当前等待操作不属于该座位")
 
         expected_action = context["action_type"]
         submitted_action = action_data.get("action_type")
@@ -162,7 +207,8 @@ class HumanActionBridge:
                 from fastapi import HTTPException
                 raise HTTPException(status_code=400, detail="目标不是当前行动的合法目标")
 
-        self._actions[game_id] = action_data
+        self._actions[key] = action_data
+        self._submitted.add(key)  # S2: 标记已提交
         event.set()  # 唤醒等待中的 wait_for_action
 
     def get_pending_action(self, game_id: str, seat_number: int) -> dict[str, Any] | None:
@@ -176,8 +222,8 @@ class HumanActionBridge:
             dict — {action_type, seat, player_name, role, allowed_target_seats,
                     last_target, can_skip, extra}
         """
-        context = self._contexts.get(game_id)
-        if not context or context["seat_number"] != seat_number:
+        context = self._contexts.get((game_id, seat_number))
+        if not context:
             return None
         return {
             "action_type": context["action_type"],
@@ -190,17 +236,30 @@ class HumanActionBridge:
             "extra": context.get("extra") or {},
         }
 
-    def is_waiting(self, game_id: str) -> bool:
-        """检查指定对局是否正在等待人类操作"""
-        return game_id in self._events
+    def is_waiting(self, game_id: str, seat_number: int | None = None) -> bool:
+        """检查指定对局（及可选座位）是否正在等待人类操作"""
+        if seat_number is not None:
+            return (game_id, seat_number) in self._events
+        return any(gid == game_id for gid, _ in self._events)
 
-    def cancel_wait(self, game_id: str):
+    def cancel_wait(self, game_id: str, seat_number: int | None = None):
         """取消等待（如玩家超时或退出）"""
-        self._actions.pop(game_id, None)
-        self._contexts.pop(game_id, None)
-        event = self._events.pop(game_id, None)
-        if event:
-            event.set()  # 唤醒但数据为空，调用方需处理空数据
+        if seat_number is not None:
+            key = (game_id, seat_number)
+            self._actions.pop(key, None)
+            self._contexts.pop(key, None)
+            event = self._events.pop(key, None)
+            if event:
+                event.set()
+        else:
+            # 取消该对局所有座位的等待
+            keys_to_remove = [k for k in self._events if k[0] == game_id]
+            for key in keys_to_remove:
+                self._actions.pop(key, None)
+                self._contexts.pop(key, None)
+                event = self._events.pop(key, None)
+                if event:
+                    event.set()
 
 
 # ─── 全局单例 ─────────────────────────────────────────────

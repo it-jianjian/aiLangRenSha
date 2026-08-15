@@ -14,15 +14,13 @@
 - AI 随机决策函数在 P3 阶段会被 Agent 子图替换，当前提供基础可玩性
 """
 
-import asyncio
 import json
 import logging
 import random
-from datetime import datetime
 from typing import Optional
 
 from app.db.session import async_session_factory
-from app.models.game import GameEvent, ChatMessage, GamePlayer, PlayerRole, PlayerType
+from app.models.game import ChatMessage, GameEvent
 from app.services.public_events import to_public_event
 
 logger = logging.getLogger(__name__)

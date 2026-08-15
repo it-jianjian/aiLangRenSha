@@ -7,9 +7,7 @@
 解析流程：LLM 输出 → 提取 JSON → 解析为 dict → 合法性校验
 """
 
-import pytest
 from app.agent.decision_parser import parse_decision, validate_decision
-
 
 # ================================================================
 # parse_decision — 从 LLM 文本输出中提取决策

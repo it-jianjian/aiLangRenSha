@@ -14,17 +14,19 @@
 
 import json
 import logging
+import queue
 import random
+import re
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
 from app.agent.context_filter import filter_context
-from app.agent.prompts import build_agent_prompt
 from app.agent.decision_parser import parse_decision, validate_decision
-from app.agent.llm import create_llm, MockWerewolfLLM
+from app.agent.llm import MockWerewolfLLM, create_llm
+from app.agent.prompts import build_agent_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,91 @@ def _get_sync_engine():
     return _sync_engine
 
 
+# ─── B4: 队列式 AgentLog 持久化 ──────────────────────────
+# 单后台线程消费队列，避免每条日志启动一个守护线程导致进程退出瞬间日志丢失
+_log_queue: queue.Queue = queue.Queue(maxsize=10000)
+_log_worker_started = False
+_log_worker_thread: threading.Thread | None = None
+_log_shutdown = threading.Event()
+
+
+def _start_log_worker() -> None:
+    """启动单日志消费后台线程（只启动一次）"""
+    global _log_worker_started, _log_worker_thread
+    if _log_worker_started:
+        return
+    _log_worker_started = True
+    _log_worker_thread = threading.Thread(target=_log_worker, daemon=True, name="agent-log-writer")
+    _log_worker_thread.start()
+
+
+def _log_worker() -> None:
+    """后台线程：从队列批量消费并写入 DB"""
+    from sqlalchemy.orm import Session
+
+    from app.models.game import AgentLog
+
+    batch: list = []
+    batch_size = 10
+
+    while not (_log_shutdown.is_set() and _log_queue.empty()):
+        try:
+            entry = _log_queue.get(timeout=1.0)
+        except queue.Empty:
+            # 超时或关闭时刷写剩余
+            if batch:
+                _flush_batch(batch, AgentLog, Session)
+                batch.clear()
+            continue
+
+        batch.append(entry)
+        if len(batch) >= batch_size:
+            _flush_batch(batch, AgentLog, Session)
+            batch.clear()
+
+    # 最终刷写
+    if batch:
+        _flush_batch(batch, AgentLog, Session)
+
+
+def _flush_batch(batch: list, AgentLog, Session) -> None:
+    try:
+        engine = _get_sync_engine()
+        with Session(engine) as session:
+            for item in batch:
+                prompt_text = "\n\n".join(
+                    f"[{type(m).__name__}] {m.content}"
+                    for m in item["prompt_messages"]
+                    if hasattr(m, "content")
+                )
+                log = AgentLog(
+                    game_id=item["game_id"],
+                    round_number=item["round_number"],
+                    seat_number=item["seat_number"],
+                    action_type=item["action_type"],
+                    context_json=json.dumps(item["filtered_context"], ensure_ascii=False, default=str),
+                    prompt_text=prompt_text,
+                    llm_raw_output=item["llm_raw_output"],
+                    parsed_decision=json.dumps(item["parsed_decision"], ensure_ascii=False, default=str) if item["parsed_decision"] else None,
+                    is_fallback=item["is_fallback"],
+                    latency_ms=item["latency_ms"],
+                    prompt_tokens=item.get("prompt_tokens"),
+                    completion_tokens=item.get("completion_tokens"),
+                    model_name=item.get("model_name"),
+                )
+                session.add(log)
+            session.commit()
+    except Exception as e:
+        logger.warning(f"[Agent] AgentLog 批量持久化失败（不影响主链）: {e}")
+
+
+def _flush_log_queue() -> None:
+    """B4: 应用关闭时刷写剩余日志"""
+    _log_shutdown.set()
+    if _log_worker_thread:
+        _log_worker_thread.join(timeout=5)
+
+
 def _persist_agent_log(
     game_id: str,
     round_number: int,
@@ -65,47 +152,33 @@ def _persist_agent_log(
     parsed_decision: dict[str, Any] | None,
     is_fallback: bool,
     latency_ms: int,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    model_name: str | None = None,
 ) -> None:
     """将 AI 决策审计日志持久化到 agent_logs 表。
 
-    记录过滤后上下文、实际 Prompt、LLM 原始输出、解析结果和 fallback 标记。
-    通过后台守护线程执行，不阻塞事件循环。
+    B4: 改为入队操作，由单后台线程批量消费写入 DB，避免进程退出瞬间日志丢失。
     """
-    # 在后台守护线程中执行同步 DB 写，避免阻塞 asyncio 事件循环
-    def _write_log():
-        try:
-            from app.models.game import AgentLog
-            from sqlalchemy.orm import Session
-
-            engine = _get_sync_engine()
-
-            # 将 LangChain 消息列表序列化为文本
-            prompt_text = "\n\n".join(
-                f"[{type(m).__name__}] {m.content}"
-                for m in prompt_messages
-                if hasattr(m, "content")
-            )
-
-            log_entry = AgentLog(
-                game_id=game_id,
-                round_number=round_number,
-                seat_number=seat_number,
-                action_type=action_type,
-                context_json=json.dumps(filtered_context, ensure_ascii=False, default=str),
-                prompt_text=prompt_text,
-                llm_raw_output=llm_raw_output,
-                parsed_decision=json.dumps(parsed_decision, ensure_ascii=False, default=str) if parsed_decision else None,
-                is_fallback=is_fallback,
-                latency_ms=latency_ms,
-            )
-
-            with Session(engine) as session:
-                session.add(log_entry)
-                session.commit()
-        except Exception as e:
-            logger.warning(f"[Agent] AgentLog 持久化失败（不影响主链）: {e}")
-
-    threading.Thread(target=_write_log, daemon=True).start()
+    _start_log_worker()
+    try:
+        _log_queue.put_nowait({
+            "game_id": game_id,
+            "round_number": round_number,
+            "seat_number": seat_number,
+            "action_type": action_type,
+            "filtered_context": filtered_context,
+            "prompt_messages": prompt_messages,
+            "llm_raw_output": llm_raw_output,
+            "parsed_decision": parsed_decision,
+            "is_fallback": is_fallback,
+            "latency_ms": latency_ms,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "model_name": model_name,
+        })
+    except queue.Full:
+        logger.warning("[Agent] AgentLog 队列已满，丢弃本条")
 
 
 # ─── Agent 状态类型（字典约定） ──────────────────────────
@@ -153,19 +226,48 @@ def run_agent(state: AgentState) -> dict[str, Any]:
         game_context=filtered,
     )
 
-    # ─── Step 3: LLMCall — 调用模型（按座位号路由到对应模型） ───
-    llm: BaseChatModel = state.get("llm") or create_llm(seat_number=seat)
+    # ─── Step 3: LLMCall — 调用模型（按决策类型路由到不同模型，阶段 3） ───
+    llm: BaseChatModel = state.get("llm") or create_llm(seat_number=seat, action_type=action_type)
     is_fallback = False
 
     # 如果是 MockWerewolfLLM，动态设置 decision_type
     if isinstance(llm, MockWerewolfLLM):
         llm.decision_type = action_type
 
-    try:
-        response = llm.invoke(messages)
-        llm_text = response.content if hasattr(response, "content") else str(response)
-    except Exception as e:
-        logger.warning(f"[Agent] {seat}号 LLM 调用失败: {e}，降级随机")
+    # 提取 token 用量和模型名（在 LLM 调用成功后）
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    resolved_model: str | None = None
+
+    # L2: 失败重试 1 次（指数退避），仍失败才走 fallback
+    llm_text = None
+    for attempt in range(2):
+        try:
+            response = llm.invoke(messages)
+            llm_text = response.content if hasattr(response, "content") else str(response)
+
+            # 从 LangChain 响应提取 usage（标准字段）
+            usage = getattr(response, "usage_metadata", None) or getattr(response, "response_metadata", {}).get("usage")
+            if usage:
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+                    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+                elif hasattr(usage, "prompt_tokens"):
+                    prompt_tokens = getattr(usage, "prompt_tokens", None)
+                    completion_tokens = getattr(usage, "completion_tokens", None)
+
+            # 记录实际使用的模型名
+            resolved_model = getattr(llm, "model_name", None) or getattr(llm, "model", None)
+            if resolved_model and not isinstance(resolved_model, str):
+                resolved_model = str(resolved_model)
+            break  # 成功，跳出重试循环
+        except Exception as e:
+            if attempt == 0:
+                logger.warning(f"[Agent] {seat}号 LLM 第1次调用失败: {e}，1s 后重试")
+                time.sleep(1)  # 指数退避：第1次重试等 1s
+            else:
+                logger.warning(f"[Agent] {seat}号 LLM 第2次调用失败: {e}，降级随机")
+                is_fallback = True
         llm_text = None
         is_fallback = True
 
@@ -173,16 +275,21 @@ def run_agent(state: AgentState) -> dict[str, Any]:
     parsed = parse_decision(llm_text) if llm_text else None
 
     if parsed is None:
-        # 解析失败 → 降级随机决策
-        logger.warning(f"[Agent] {seat}号 解析失败，降级随机决策")
-        is_fallback = True
-        parsed = _random_decision(action_type, filtered, seat)
+        if action_type in ("speech", "last_words") and isinstance(llm_text, str) and llm_text.strip():
+            # 发言/遗言：prompt 要求直接输出文本，解析失败时用 LLM 原文（兼容模型仍输出 JSON 的惯性）
+            cleaned = _clean_speech_text(llm_text)
+            parsed = {"decision": cleaned, "reasoning": "(直接文本输出)"}
+            logger.info(f"[Agent] {seat}号 {action_type} 直接使用 LLM 原文（非 JSON 输出）")
+        else:
+            # 解析失败 → 降级随机决策
+            logger.warning(f"[Agent] {seat}号 解析失败，降级随机决策")
+            is_fallback = True
+            parsed = _random_decision(action_type, filtered, seat)
 
     decision_value = parsed.get("decision")
 
     # 校验决策合法性
     alive_seats = filtered.get("alive_seats", [])
-    werewolf_seats = filtered.get("werewolf_companions", [])
     if role == "werewolf":
         # 校验时加上自己的座位号到 werewolf_seats
         all_werewolf_seats = game_context.get("werewolf_seats", [])
@@ -237,6 +344,9 @@ def run_agent(state: AgentState) -> dict[str, Any]:
         parsed_decision=parsed,
         is_fallback=is_fallback,
         latency_ms=latency_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        model_name=resolved_model,
     )
 
     result = {
@@ -258,6 +368,18 @@ def run_agent(state: AgentState) -> dict[str, Any]:
 # ================================================================
 # 降级随机决策
 # ================================================================
+
+def _clean_speech_text(text: str) -> str:
+    """清理发言/遗言原文：去掉 markdown 代码块包裹与首尾空白
+
+    模型可能惯性输出 ```json ... ``` 包裹的文本，剥离后保留正文。
+    """
+    t = text.strip()
+    md_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", t, re.DOTALL)
+    if md_match:
+        t = md_match.group(1).strip()
+    return t
+
 
 def _random_decision(
     action_type: str,

@@ -44,6 +44,12 @@ interface GameStoreState {
     canSkip?: boolean
   } | null
 
+  // ─── 阶段 2 流式发言 ───
+  streamingSpeech: Record<number, string>  // seat → 累积文本
+  streamingActive: boolean                 // 是否正在流式输出
+  _streamingPending: Record<number, string>  // F1: chunk 缓冲区
+  _streamingFlushScheduled: boolean          // F1: flush 是否已安排
+
   // ─── WebSocket 消息流 ───
   messages: WSMessage[]
 
@@ -53,6 +59,9 @@ interface GameStoreState {
   markPlayerDead: (seat: number) => void
   setMyRole: (seat: number, role: string, companions?: number[]) => void
   addSpeech: (speech: Speech) => void
+  appendStreamingSpeech: (seat: number, delta: string) => void
+  endStreamingSpeech: (seat: number) => void
+  clearStreamingSpeech: () => void
   setVotes: (votes: Record<number, number | null>) => void
   setPhase: (round: number, phase: string) => void
   setWinner: (winner: string) => void
@@ -77,6 +86,10 @@ const initialState = {
   mySeat: null as number | null,
   myCompanions: [] as number[],
   actionPrompt: null as any,
+  streamingSpeech: {} as Record<number, string>,
+  streamingActive: false,
+  _streamingPending: {} as Record<number, string>,
+  _streamingFlushScheduled: false,
   messages: [] as WSMessage[],
 }
 
@@ -98,6 +111,38 @@ export const useGameStore = create<GameStoreState>((set) => ({
   addSpeech: (speech) =>
     set((state) => ({ speeches: [...state.speeches, speech] })),
 
+  // F1: chunk 缓冲合批 — 50ms 窗口内多个 chunk 合并为一次 setState
+  appendStreamingSpeech: (seat, delta) =>
+    set((state) => {
+      const pending = state._streamingPending[seat] || ''
+      state._streamingPending[seat] = pending + delta
+      // 首次收到 chunk 时安排 flush
+      if (!state._streamingFlushScheduled) {
+        state._streamingFlushScheduled = true
+        setTimeout(() => {
+          set((s) => {
+            const updates = { ...s.streamingSpeech }
+            for (const [s2, text] of Object.entries(s._streamingPending)) {
+              updates[Number(s2)] = (updates[Number(s2)] || '') + text
+            }
+            return {
+              streamingSpeech: updates,
+              streamingActive: true,
+              _streamingPending: {},
+              _streamingFlushScheduled: false,
+            }
+          })
+        }, 50)
+      }
+      return { streamingActive: true }
+    }),
+
+  endStreamingSpeech: (seat) =>
+    set((state) => ({ streamingActive: false })),
+
+  clearStreamingSpeech: () =>
+    set({ streamingSpeech: {}, streamingActive: false }),
+
   setVotes: (votes) => set({ votes }),
 
   setPhase: (round, phase) =>
@@ -112,5 +157,5 @@ export const useGameStore = create<GameStoreState>((set) => ({
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
 
-  reset: () => set({ ...initialState }),
+  reset: () => set({ ...initialState, streamingSpeech: {}, streamingActive: false, _streamingPending: {}, _streamingFlushScheduled: false }),
 }))

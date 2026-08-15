@@ -3,7 +3,6 @@
 import json
 from typing import Any
 
-
 _PRIVATE_EVENT_TYPES = {"night_settle", "night_guard", "hunter_shot", "hunter_revenge"}
 
 

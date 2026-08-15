@@ -16,8 +16,8 @@
 """
 
 import pytest
-from app.agent.context_filter import filter_context
 
+from app.agent.context_filter import filter_context
 
 # ─── 测试数据工厂 ─────────────────────────────────────────
 

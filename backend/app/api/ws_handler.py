@@ -26,7 +26,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ async def resolve_player_binding(session, game_id: str, player_token: str) -> di
         }
     """
     from sqlalchemy import select
+
     from app.models.game import Game, GamePlayer, PlayerType
     from app.services.game_service import GameService
 

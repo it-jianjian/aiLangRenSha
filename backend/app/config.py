@@ -44,6 +44,23 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_timeout: int = 30
 
+    # ─── 按决策类型路由模型（阶段 3） ───────────────────────
+    # 空字符串 = 不启用（回退现有链路，向后兼容）
+    llm_action_simple_model: str = ""   # kill/verify/save/poison/vote/guard/hunter_shoot 使用
+    llm_action_speech_model: str = ""   # speech/last_words 使用
+
+    # ─── Prompt 膨胀治理（阶段 4a） ──────────────────────────
+    prompt_history_budget: int = 3000   # 按字符数估算 token，超阈值时压缩历史
+
+    # ─── AI 行动间隔（阶段 1 可配置） ────────────────────────
+    ai_action_delay_night: float = 1.5
+    ai_action_delay_day: float = 1.0
+    ai_action_delay_vote: float = 0.8
+
+    # ─── LLM 超时分级（阶段 L3） ───────────────────────────
+    llm_timeout_simple: int = 15    # kill/verify/save/poison/vote/guard/hunter_shoot
+    llm_timeout_speech: int = 45    # speech/last_words
+
     # ─── 多实例 LLM 配置（每个座位独立模型） ────────────────────
     # 座位1~12 各自的模型和温度（共用同一个 API Key + Base URL）
     llm_inst_1_model: str = ""

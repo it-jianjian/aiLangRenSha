@@ -10,13 +10,12 @@
 - 不实际调用 LLM API（全部 Mock）
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.llm import create_llm, MockWerewolfLLM
-
+from app.agent.llm import MockWerewolfLLM, create_llm
 
 # ================================================================
 # create_llm — 工厂函数测试

@@ -12,11 +12,9 @@ Prompt 四部分组装：
 调用链：AgentGraph(PromptBuildNode) → build_agent_prompt → list[BaseMessage]
 """
 
-import json
 from typing import Any
 
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
-
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 # ================================================================
 # 角色策略文本
@@ -168,8 +166,7 @@ def get_decision_instruction(action_type: str) -> str:
             "- 如果你掌握关键信息（如查验结果），斟酌是否在此轮公开——\n"
             "  过早暴露身份会招致狼人针对\n"
             "- 发言要有信息增量，让其他玩家能从你的发言中获得新线索\n"
-            "请以 JSON 格式输出你的发言：\n"
-            '{"decision": "你的发言文本(1-1000字)", "reasoning": "你这样说的策略考量"}\n'
+            "请直接输出你的发言文本（1-1000字），不要输出 JSON 或任何其他格式包装，\n"
             "发言内容会公开展示给所有玩家。"
         ),
         "vote": (
@@ -180,8 +177,7 @@ def get_decision_instruction(action_type: str) -> str:
         ),
         "last_words": (
             "【你的决策】你已被淘汰，请发表你的遗言。\n"
-            "请以 JSON 格式输出你的遗言：\n"
-            '{"decision": "你的遗言文本", "reasoning": "你的遗言策略"}\n'
+            "请直接输出你的遗言文本，不要输出 JSON 或任何其他格式包装。\n"
             "遗言会公开展示，可以用来传递重要信息。"
         ),
         "guard": (
@@ -327,7 +323,7 @@ def _format_game_context(context: dict[str, Any]) -> str:
         night_deaths = context.get("night_deaths", None)
         if night_deaths is not None:
             if len(night_deaths) == 0:
-                parts.append(f"\n【昨晚情况】昨晚是平安夜，无人死亡（可能是女巫用了解药）")
+                parts.append("\n【昨晚情况】昨晚是平安夜，无人死亡（可能是女巫用了解药）")
             else:
                 parts.append(f"\n【昨晚情况】昨晚 {night_deaths}号 不幸离世（被狼人杀害）")
 
@@ -343,14 +339,18 @@ def _format_game_context(context: dict[str, Any]) -> str:
             if nd:
                 parts.append(f"  夜晚死亡: {nd}号")
             elif nd is not None and len(nd) == 0:
-                parts.append(f"  夜晚: 平安夜")
+                parts.append("  夜晚: 平安夜")
             # 发言
             hist_speeches = hist.get("speeches", [])
             if hist_speeches:
-                parts.append(f"  发言记录:")
-                for s in hist_speeches:
-                    # 不截断，完整展示
-                    parts.append(f"    {s['seat']}号: {s['content']}")
+                if hist.get("summarized"):
+                    parts.append("  📝 [历史摘要]")
+                    for s in hist_speeches:
+                        parts.append(f"    {s['content']}")
+                else:
+                    parts.append("  发言记录:")
+                    for s in hist_speeches:
+                        parts.append(f"    {s['seat']}号: {s['content']}")
             # 平票 PK 详情（让 AI 记忆上轮出现过平票、两人 battle 及当时投票）
             # 放在重投前，顺序：平票宣布 → 首轮投票 → PK 发言 → PK 重投
             if hist.get("is_pk"):

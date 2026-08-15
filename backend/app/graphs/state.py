@@ -12,8 +12,8 @@
 """
 
 from typing import Any, Optional
-from typing_extensions import TypedDict
 
+from typing_extensions import TypedDict
 
 # ================================================================
 # 玩家字典结构（players 列表中每个元素的字段约定）

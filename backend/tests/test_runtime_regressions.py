@@ -130,7 +130,10 @@ async def test_non_tied_human_elimination_is_announced_before_bounded_last_words
     monkeypatch.setattr(vote_phase, "broadcast_persisted_event", broadcast_event)
     monkeypatch.setattr(vote_phase, "save_speech", save_speech)
     monkeypatch.setattr(vote_phase, "human_bridge", Bridge())
-    monkeypatch.setattr(vote_phase, "AI_ACTION_DELAY", 0)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(
+        ai_action_delay_night=0, ai_action_delay_day=0, ai_action_delay_vote=0,
+        prompt_history_budget=0,
+    ))
 
     state = {
         "game_id": "game-1", "current_round": 1, "eliminated_seat": 1, "is_pk": False,
@@ -155,9 +158,9 @@ async def test_non_tied_human_elimination_is_announced_before_bounded_last_words
 @pytest.mark.asyncio
 async def test_eliminate_event_insert_failure_rolls_back_player_death(tmp_path, monkeypatch):
     """B10: event insertion failure must leave both player and event unchanged."""
+    import app.db.session
     from app.graphs import event_bus
     from app.graphs.nodes import vote_phase
-    import app.db.session
 
     engine, factory = await _atomic_elimination_database(tmp_path)
 
@@ -168,7 +171,10 @@ async def test_eliminate_event_insert_failure_rolls_back_player_death(tmp_path, 
     event.listen(GameEvent, "before_insert", fail_eliminate_insert)
     monkeypatch.setattr(app.db.session, "async_session_factory", factory)
     monkeypatch.setattr(event_bus, "async_session_factory", factory)
-    monkeypatch.setattr(vote_phase, "AI_ACTION_DELAY", 0)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(
+        ai_action_delay_night=0, ai_action_delay_day=0, ai_action_delay_vote=0,
+        prompt_history_budget=0,
+    ))
     try:
         with pytest.raises(RuntimeError, match="simulated eliminate insert failure"):
             await vote_phase.day_eliminate_node(_human_elimination_state())
@@ -188,10 +194,10 @@ async def test_eliminate_event_insert_failure_rolls_back_player_death(tmp_path, 
 @pytest.mark.asyncio
 async def test_eliminate_success_commits_one_player_update_and_one_event_once(tmp_path, monkeypatch):
     """B10: player death and one eliminate event are committed together before broadcast."""
-    from app.graphs import event_bus
-    from app.graphs.nodes import vote_phase
     import app.api.ws_handler
     import app.db.session
+    from app.graphs import event_bus
+    from app.graphs.nodes import vote_phase
 
     engine, factory = await _atomic_elimination_database(tmp_path)
     commit_count = 0
@@ -232,7 +238,10 @@ async def test_eliminate_success_commits_one_player_update_and_one_event_once(tm
     monkeypatch.setattr(vote_phase, "human_bridge", Bridge())
     monkeypatch.setattr(vote_phase, "save_speech", no_op)
     monkeypatch.setattr(vote_phase, "record_event", no_op)
-    monkeypatch.setattr(vote_phase, "AI_ACTION_DELAY", 0)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(
+        ai_action_delay_night=0, ai_action_delay_day=0, ai_action_delay_vote=0,
+        prompt_history_budget=0,
+    ))
     try:
         task = asyncio.create_task(vote_phase.day_eliminate_node(_human_elimination_state()))
         await prompt_started.wait()
@@ -260,8 +269,9 @@ async def test_eliminate_success_commits_one_player_update_and_one_event_once(tm
 
 def test_new_ai_names_and_mock_llm_text_are_utf8_chinese():
     """Newly generated names and AI content must survive a real UTF-8 byte round trip."""
-    from app.agent.llm import MockWerewolfLLM
     from langchain_core.messages import HumanMessage
+
+    from app.agent.llm import MockWerewolfLLM
 
     roster = {PlayerRole.WEREWOLF: 2, PlayerRole.VILLAGER: 2, PlayerRole.SEER: 1, PlayerRole.WITCH: 1}
     specs = GameService._build_player_specs(GameMode.PURE_AI, None, roster)

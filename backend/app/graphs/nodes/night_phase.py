@@ -1,13 +1,12 @@
 """AI 狼人杀 — 夜晚阶段节点函数
 
-本文件包含夜晚阶段的 5 个 LangGraph 节点函数：
-1. night_start_node     — 夜晚开始，重置夜晚临时数据，轮次+1
-2. night_werewolf_node  — 狼人行动：选择击杀目标（双狼协商）
-3. night_seer_node      — 预言家行动：查验一名玩家身份
-4. night_witch_node     — 女巫行动：选择使用解药/毒药/跳过
-5. night_settle_node    — 夜晚结算：综合三方行动，确定最终死亡名单
+本文件包含夜晚阶段的节点函数：
+1. night_start_node           — 夜晚开始，重置夜晚临时数据，轮次+1
+2. night_parallel_actions_node — 阶段 1 并行节点：狼人+预言家+守卫同时行动
+3. night_witch_node           — 女巫行动：依赖 night_kill_target，串行执行
+4. night_settle_node          — 夜晚结算：综合三方行动，确定最终死亡名单
 
-调用链：night_start → night_werewolf → night_seer → night_witch → night_settle → victory_check
+调用链：night_start → night_parallel_actions → night_witch → night_settle → victory_check
 
 PRD 规则要点：
 - 狼人必须击杀目标（不能空刀），2 狼不一致时 AI 随机/人类优先
@@ -17,30 +16,100 @@ PRD 规则要点：
 """
 
 import asyncio
+import json
 import logging
 
-from app.models.game import PlayerRole
-from app.graphs.state import GameFlowState
+from app.config import get_settings
 from app.graphs.event_bus import (
-    record_event,
-    get_alive_players,
     get_alive_by_role,
+    get_alive_players,
     kill_player,
+    record_event,
 )
-from app.graphs.nodes.agent_nodes import call_agent_werewolf_kill, call_agent_seer_verify, call_agent_witch, call_agent_guard, call_agent_hunter_shoot
-from app.services.human_action_bridge import human_bridge
+from app.graphs.nodes import timed_node
+from app.graphs.nodes.agent_nodes import (
+    call_agent_async,
+    call_agent_guard,
+    call_agent_hunter_shoot,
+    call_agent_werewolf_kill,
+    call_agent_witch,
+)
+from app.graphs.state import GameFlowState
+from app.models.game import PlayerRole
 from app.services.game_rules import can_hunter_shoot, guard_target_is_valid, resolve_night_deaths
+from app.services.human_action_bridge import human_bridge
 
 logger = logging.getLogger(__name__)
 
-# P2 阶段 AI 行动间隔（秒），模拟思考时间提升观赏性
-AI_ACTION_DELAY = 1.5  # AI 思考时间（秒），提升观赏性
+
+async def _summarize_history_if_needed(game_history: list[dict], new_round: int) -> list[dict]:
+    """当 game_history 序列化长度超阈值时，对"距今 2 轮之前"的历史压缩为摘要。
+
+    摘要用小模型（复用 llm_action_simple_model），失败保留原文。
+    已标记 summarized: true 的轮次不再重复压缩。
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from app.agent.llm import create_llm
+    from app.config import get_settings
+
+    settings = get_settings()
+    budget = settings.prompt_history_budget
+    if budget <= 0:
+        return game_history
+
+    # 序列化长度检查
+    serialized = json.dumps(game_history, ensure_ascii=False)
+    if len(serialized) <= budget:
+        return game_history
+
+    # 找出需要压缩的轮次（距今 2 轮之前，且未被压缩过）
+    cutoff_round = new_round - 2  # > cutoff_round 的保持全量
+    old_entries = [h for h in game_history if h.get("round", 0) <= cutoff_round and not h.get("summarized")]
+    if not old_entries:
+        return game_history
+
+    # 创建 LLM（优先小模型）
+    llm = create_llm(action_type="speech")  # 用阶段 3 的简单模型路由（speech 走大模型）
+
+    for entry in old_entries:
+        speeches = entry.get("speeches", [])
+        if not speeches:
+            entry["summarized"] = True
+            continue
+
+        # 构建压缩 Prompt
+        speech_text = "\n".join(f"  {s['seat']}号: {s['content']}" for s in speeches)
+        prompt = (
+            f"请将以下狼人杀第{entry['round']}轮的发言压缩为 3~5 句摘要。\n"
+            f"要求：保留关键事实（谁跳了什么身份、指控关系、票型结果、死亡），去除修辞与重复。\n"
+            f"直接输出摘要文本，不要 JSON 壳。\n\n"
+            f"【第{entry['round']}轮发言】\n{speech_text}"
+        )
+
+        try:
+            response = llm.invoke([
+                SystemMessage(content="你是游戏记录助手，擅长将长对话精简为关键要点。"),
+                HumanMessage(content=prompt),
+            ])
+            summary_text = response.content if hasattr(response, "content") else str(response)
+            # 替换 speeches 为摘要
+            entry["speeches"] = [{"seat": 0, "content": summary_text.strip(), "summarized": True}]
+            entry["summarized"] = True
+            logger.info(f"[Summary] 第 {entry['round']} 轮已压缩为 {len(summary_text)} 字符摘要")
+        except Exception as e:
+            logger.warning(f"[Summary] 第 {entry['round']} 轮压缩失败，保留原文: {e}")
+            # 仍标记为 summarized 避免重复尝试
+            entry["summarized"] = True
+
+    return game_history
 
 
 async def _update_game_round_summary(game_id: str, round_number: int, **values) -> None:
+    from sqlalchemy import select
+
     from app.db.session import async_session_factory
     from app.models.game import GameRound
-    from sqlalchemy import select
 
     async with async_session_factory() as session:
         result = await session.execute(
@@ -55,6 +124,7 @@ async def _update_game_round_summary(game_id: str, round_number: int, **values) 
         await session.commit()
 
 
+@timed_node
 async def night_start_node(state: GameFlowState) -> dict:
     """夜晚开始节点
 
@@ -80,9 +150,10 @@ async def night_start_node(state: GameFlowState) -> dict:
     )
 
     # ─── 创建本轮 GameRound 记录（如不存在） ───
+    from sqlalchemy import select
+
     from app.db.session import async_session_factory
     from app.models.game import GameRound
-    from sqlalchemy import select
 
     async with async_session_factory() as session:
         result = await session.execute(
@@ -135,6 +206,9 @@ async def night_start_node(state: GameFlowState) -> dict:
             game_history.append(round_summary)
             logger.info(f"[Night] 第 {prev_round} 轮摘要已加入游戏历史（共 {len(game_history)} 轮）")
 
+    # ─── Prompt 膨胀治理（阶段 4a）：超长历史压缩为滚动摘要 ───
+    game_history = await _summarize_history_if_needed(game_history, new_round)
+
     return {
         "current_round": new_round,
         # 重置夜晚临时数据
@@ -159,95 +233,125 @@ async def night_start_node(state: GameFlowState) -> dict:
     }
 
 
-async def night_werewolf_node(state: GameFlowState) -> dict:
-    """狼人行动节点
+@timed_node
+async def night_parallel_actions_node(state: GameFlowState) -> dict:
+    """阶段 1 并行节点：狼人+预言家+守卫同时行动
 
-    职责：让存活的狼人选择击杀目标，处理双狼协商逻辑
+    狼人、预言家、守卫三方行动互相独立，通过 asyncio.gather 并行执行。
+    女巫在下一节点串行执行（依赖 night_kill_target）。
 
-    PRD 规则（E02）：
-    - 2 狼人存活时分别选择，一致则执行，不一致时：
-      - 双 AI → 随机选一个
-      - 含人类 → 以人类选择为准
-    - 只剩 1 狼人 → 直接执行其选择
-    - 狼人不能击杀另一名狼人
-    - 狼人必须选择目标（不能空刀）
-
-    P2 实现：AI 随机选择存活非狼人玩家
+    双狼协商语义不变：并行收集意向后按现有规则仲裁。
     """
-    # ─── 检查是否有存活狼人 ───
-    alive_werewolves = get_alive_by_role(state["players"], PlayerRole.WEREWOLF)
-    if not alive_werewolves:
-        # 所有狼人已死亡，跳过狼人行动
-        logger.info("[Night] 无存活狼人，跳过狼人行动")
-        return {"night_kill_target": None}
+    settings = get_settings()
 
-    # ─── 获取可击杀目标（存活的非狼人玩家） ───
+    # ─── 准备狼人行动 ───
+    alive_werewolves = get_alive_by_role(state["players"], PlayerRole.WEREWOLF)
     alive_non_werewolf_seats = [
         p["seat_number"] for p in get_alive_players(state["players"])
         if p["role"] != PlayerRole.WEREWOLF
     ]
 
-    if not alive_non_werewolf_seats:
-        # 没有可击杀目标（极端情况：只剩狼人）
-        logger.info("[Night] 无非狼人目标，跳过狼人行动")
-        return {"night_kill_target": None}
+    # ─── 准备预言家行动 ───
+    seer = next((p for p in state["players"] if p["role"] == PlayerRole.SEER and p["is_alive"]), None)
+    seer_alive_other = [
+        p["seat_number"] for p in get_alive_players(state["players"])
+        if p["seat_number"] != seer["seat_number"]
+    ] if seer else []
 
-    # ─── 狼人选择击杀目标 ───
-    await asyncio.sleep(AI_ACTION_DELAY)  # 模拟思考时间
-    choices = {}  # 预初始化，避免单狼分支未定义
+    # ─── 准备守卫行动 ───
+    guard = next((p for p in state["players"] if p["role"] == PlayerRole.GUARD and p["is_alive"]), None)
+    guard_candidates = [
+        seat for seat in [p["seat_number"] for p in get_alive_players(state["players"])]
+        if seat != state.get("guard_last_target")
+    ] if guard else []
+
+    # ─── 并行执行三方行动 ───
+    tasks = []
+
+    if alive_werewolves and alive_non_werewolf_seats:
+        tasks.append(_do_werewolf(state, alive_werewolves, alive_non_werewolf_seats))
+    else:
+        tasks.append(_no_op({"night_kill_target": None, "werewolf_agreement": "skip"}))
+        if not alive_werewolves:
+            logger.info("[Night] 无存活狼人，跳过狼人行动")
+        if not alive_non_werewolf_seats:
+            logger.info("[Night] 无非狼人目标，跳过狼人行动")
+
+    if seer and seer_alive_other:
+        tasks.append(_do_seer(state, seer, seer_alive_other))
+    else:
+        tasks.append(_no_op({"night_seer_target": None, "night_seer_result": None}))
+        if not seer:
+            logger.info("[Night] 预言家已死亡，跳过查验")
+
+    if guard and guard_candidates:
+        tasks.append(_do_guard(state, guard, guard_candidates))
+    else:
+        tasks.append(_no_op({"night_guard_target": None}))
+
+    results = await asyncio.gather(*tasks)
+
+    # 合并三方行动结果
+    merged = {}
+    for r in results:
+        merged.update(r)
+
+    # ─── 并行完成后统一 delay ───
+    if settings.ai_action_delay_night > 0:
+        await asyncio.sleep(settings.ai_action_delay_night)
+
+    return merged
+
+
+async def _do_werewolf(state, alive_werewolves, alive_non_werewolf_seats) -> dict:
+    """狼人击杀行动（可被 gather 并行调用）"""
+    choices = {}
 
     if len(alive_werewolves) == 1:
         sole_wolf = alive_werewolves[0]
         if sole_wolf["player_type"] == "human":
-            # 人类独狼：等待人类提交击杀目标
             action = await human_bridge.wait_for_action(
                 state["game_id"], "kill",
-                {"seat_number": sole_wolf["seat_number"], "player_name": sole_wolf["player_name"], "role": sole_wolf["role"],
-                 "phase": "night", "allowed_target_seats": alive_non_werewolf_seats},
+                {"seat_number": sole_wolf["seat_number"], "player_name": sole_wolf["player_name"],
+                 "role": sole_wolf["role"], "phase": "night",
+                 "allowed_target_seats": alive_non_werewolf_seats},
             )
             target = action.get("target_seat")
             if target not in alive_non_werewolf_seats:
                 target = call_agent_werewolf_kill(state, sole_wolf)
             agreement = "human_sole_werewolf"
         else:
-            target = call_agent_werewolf_kill(state, sole_wolf)
+            target = await call_agent_async(state, sole_wolf, "kill")
             agreement = "single_ai_werewolf"
     else:
-        # 2 个狼人分别选择
-        choices = {}
+        # 双狼并行收集
+        wolf_tasks = []
         for ww in alive_werewolves:
             if ww["player_type"] == "human":
-                # 人类狼人：等待提交击杀目标
-                action = await human_bridge.wait_for_action(
-                    state["game_id"], "kill",
-                    {"seat_number": ww["seat_number"], "player_name": ww["player_name"], "role": ww["role"],
-                     "phase": "night", "allowed_target_seats": alive_non_werewolf_seats},
-                )
-                choices[ww["seat_number"]] = action.get("target_seat")
+                wolf_tasks.append(_human_wolf_choice(state, ww, alive_non_werewolf_seats))
             else:
-                choices[ww["seat_number"]] = call_agent_werewolf_kill(state, ww)
+                wolf_tasks.append(_ai_wolf_choice(state, ww))
+
+        wolf_results = await asyncio.gather(*wolf_tasks)
+        for seat, choice in wolf_results:
+            choices[seat] = choice
 
         targets = list(choices.values())
         if len(set(targets)) == 1:
-            # 选择一致
             target = targets[0]
             agreement = "unanimous"
         else:
-            # 选择不一致 → 协商
-            human_choices = [
+            human_seats = [
                 s for s, t in choices.items()
                 if any(p["seat_number"] == s and p["player_type"] == "human" for p in state["players"])
             ]
-            if human_choices:
-                # 有人类狼人 → 人类优先
-                target = choices[human_choices[0]]
+            if human_seats:
+                target = choices[human_seats[0]]
                 agreement = "human_priority"
             else:
-                # 双 AI → 稳定仲裁（较小座位狼人优先），避免正常主路径随机。
                 target = choices[sorted(choices)[0]]
                 agreement = "stable_ai_priority"
 
-    # ─── 记录事件 ───
     await record_event(
         state["game_id"], state["current_round"], "night", "night_kill",
         event_data={
@@ -262,57 +366,46 @@ async def night_werewolf_node(state: GameFlowState) -> dict:
     )
     logger.info(f"[Night] 狼人选择击杀 {target}号({target_name})，协商方式: {agreement}")
 
-    return {"night_kill_target": target}
+    return {"night_kill_target": target, "werewolf_agreement": agreement}
 
 
-async def night_seer_node(state: GameFlowState) -> dict:
-    """预言家行动节点
+async def _human_wolf_choice(state, wolf, targets):
+    """人类狼人提交击杀目标"""
+    action = await human_bridge.wait_for_action(
+        state["game_id"], "kill",
+        {"seat_number": wolf["seat_number"], "player_name": wolf["player_name"],
+         "role": wolf["role"], "phase": "night", "allowed_target_seats": targets},
+    )
+    return (wolf["seat_number"], action.get("target_seat"))
 
-    职责：让存活的预言家选择查验一名玩家
 
-    PRD 规则：
-    - 预言家每轮可以查验一名存活的其他玩家
-    - 不能查验自己
-    - 可以重复查验已查验过的玩家
-    - 结果只有两种：werewolf / villager（村民、女巫均返回"好人"→ 这里用 villager 表示）
+async def _ai_wolf_choice(state, wolf):
+    """AI 狼人提交击杀目标"""
+    target = await call_agent_async(state, wolf, "kill")
+    return (wolf["seat_number"], target)
 
-    P2 实现：AI 随机选择存活的其他玩家查验
-    """
-    # ─── 检查预言家是否存活 ───
-    seer = None
-    for p in state["players"]:
-        if p["role"] == PlayerRole.SEER and p["is_alive"]:
-            seer = p
-            break
 
-    if not seer:
-        logger.info("[Night] 预言家已死亡，跳过查验")
-        return {"night_seer_target": None, "night_seer_result": None}
-
-    # ─── 获取可查验目标（存活的其他玩家） ───
-    alive_other_seats = [
-        p["seat_number"] for p in get_alive_players(state["players"])
-        if p["seat_number"] != seer["seat_number"]
-    ]
-
-    if not alive_other_seats:
-        return {"night_seer_target": None, "night_seer_result": None}
-
-    # ─── 预言家选择查验目标 ───
-    await asyncio.sleep(AI_ACTION_DELAY)
-
+async def _do_seer(state, seer, alive_other_seats) -> dict:
+    """预言家查验行动（可被 gather 并行调用）"""
     if seer["player_type"] == "human":
         action = await human_bridge.wait_for_action(
             state["game_id"], "verify",
-            {"seat_number": seer["seat_number"], "player_name": seer["player_name"], "role": seer["role"],
-             "phase": "night", "allowed_target_seats": alive_other_seats},
+            {"seat_number": seer["seat_number"], "player_name": seer["player_name"],
+             "role": seer["role"], "phase": "night", "allowed_target_seats": alive_other_seats},
         )
         target = action.get("target_seat")
     else:
-        target = call_agent_seer_verify(state, seer)
+        target = await call_agent_async(state, seer, "verify")
 
-    # ─── 判定查验结果 ───
-    target_player = next(p for p in state["players"] if p["seat_number"] == target)
+    # 兜底：target 无效时选第一个合法目标
+    if target is None or target not in alive_other_seats:
+        target = alive_other_seats[0] if alive_other_seats else None
+    if target is None:
+        return {"night_seer_target": None, "night_seer_result": None}
+
+    target_player = next((p for p in state["players"] if p["seat_number"] == target), None)
+    if target_player is None:
+        return {"night_seer_target": None, "night_seer_result": None}
     result = "werewolf" if target_player["role"] == PlayerRole.WEREWOLF else "villager"
 
     await record_event(
@@ -323,7 +416,6 @@ async def night_seer_node(state: GameFlowState) -> dict:
 
     logger.info(f"[Night] 预言家({seer['seat_number']}号)查验 {target}号 → {result}")
 
-    # ─── 累积预言家查验历史（跨轮持久化） ───
     seer_history = list(state.get("seer_history", []))
     seer_history.append({
         "round": state["current_round"],
@@ -331,17 +423,12 @@ async def night_seer_node(state: GameFlowState) -> dict:
         "result": result,
     })
 
-    # ─── 私有通知：只发给预言家本人 ───
     if seer["player_type"] == "human":
         try:
             from app.api.ws_handler import ws_manager
             await ws_manager.send_to_seat(state["game_id"], seer["seat_number"], {
                 "type": "private_seer_result",
-                "data": {
-                    "target": target,
-                    "result": result,
-                    "round": state["current_round"],
-                },
+                "data": {"target": target, "result": result, "round": state["current_round"]},
             })
         except Exception as e:
             logger.debug(f"[Night] WS 私有通知失败: {e}")
@@ -353,6 +440,36 @@ async def night_seer_node(state: GameFlowState) -> dict:
     }
 
 
+async def _do_guard(state, guard, candidates) -> dict:
+    """守卫守护行动（可被 gather 并行调用）"""
+    if guard["player_type"] == "human":
+        action = await human_bridge.wait_for_action(state["game_id"], "guard", {
+            "seat_number": guard["seat_number"], "role": "guard", "phase": "night",
+            "last_target": state.get("guard_last_target"), "allowed_target_seats": candidates,
+        })
+        target = action.get("target_seat")
+    else:
+        target = await call_agent_async(state, guard, "guard", None)
+
+    valid, _ = guard_target_is_valid(target, state.get("guard_last_target"),
+                                      [p["seat_number"] for p in get_alive_players(state["players"])]) if target is not None else (False, "")
+    if not valid:
+        target = None
+
+    await record_event(state["game_id"], state["current_round"], "night", "night_guard",
+                       seat_number=guard["seat_number"], event_data={"target": target})
+
+    await _update_game_round_summary(state["game_id"], state["current_round"], guard_target_seat=target)
+
+    return {"night_guard_target": target, "guard_last_target": target or state.get("guard_last_target")}
+
+
+async def _no_op(result):
+    """空操作占位（当某角色不存在或无法行动时）"""
+    return result
+
+
+@timed_node
 async def night_witch_node(state: GameFlowState) -> dict:
     """女巫行动节点
 
@@ -379,6 +496,8 @@ async def night_witch_node(state: GameFlowState) -> dict:
         logger.info("[Night] 女巫已死亡，跳过女巫行动")
         return {"night_witch_action": "skip", "night_witch_target": None}
 
+    settings = get_settings()
+
     # ─── 判断可用药水 ───
     save_available = not state["witch_save_used"] and state["night_kill_target"] is not None
     poison_available = not state["witch_poison_used"]
@@ -390,7 +509,8 @@ async def night_witch_node(state: GameFlowState) -> dict:
     ]
 
     # ─── 女巫决策 ───
-    await asyncio.sleep(AI_ACTION_DELAY)
+    if settings.ai_action_delay_night > 0:
+        await asyncio.sleep(settings.ai_action_delay_night)
 
     # ─── 私有通知：告诉女巫今晚谁被杀了（人类女巫需要此信息来决定是否用解药） ───
     if witch["player_type"] == "human":
@@ -439,7 +559,7 @@ async def night_witch_node(state: GameFlowState) -> dict:
         target = None
 
     await record_event(
-        state["game_id"], state["current_round"], "night", 
+        state["game_id"], state["current_round"], "night",
         "night_save" if action == "save" else ("night_poison" if action == "poison" else "night_witch_skip"),
         seat_number=witch["seat_number"],
         event_data={"action": action, "target": target},
@@ -458,6 +578,7 @@ async def night_witch_node(state: GameFlowState) -> dict:
     return updates
 
 
+@timed_node
 async def night_guard_node(state: GameFlowState) -> dict:
     """守卫行动：存活守卫每夜守护一名存活玩家，不能连续守同一目标。"""
     guard = next((p for p in state["players"] if p["role"] == PlayerRole.GUARD and p["is_alive"]), None)
@@ -482,6 +603,7 @@ async def night_guard_node(state: GameFlowState) -> dict:
     return {"night_guard_target": target, "guard_last_target": target or state.get("guard_last_target")}
 
 
+@timed_node
 async def night_settle_node(state: GameFlowState) -> dict:
     """夜晚结算节点
 
@@ -542,6 +664,7 @@ async def night_settle_node(state: GameFlowState) -> dict:
     }
 
 
+@timed_node
 async def hunter_revenge_node(state: GameFlowState) -> dict:
     """仅消费显式 pending_hunter_shot；毒杀绝不触发，不扫描本轮死者推导资格。"""
     pending = state.get("pending_hunter_shot")

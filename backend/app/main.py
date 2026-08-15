@@ -12,14 +12,14 @@
 防止云服务器反向代理/负载均衡因空闲超时断开 WebSocket）
 """
 
-from contextlib import asynccontextmanager
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.db.session import engine, Base
+from app.db.session import Base, engine
 
 
 @asynccontextmanager
@@ -47,18 +47,37 @@ async def lifespan(app: FastAPI):
     from app.db.migrations import upgrade_database
     await asyncio.to_thread(upgrade_database, settings.database_url)
 
-    # 游戏流程仅在进程内 asyncio task 中执行，重启后无法从安全检查点续跑。
-    # 显式终止遗留 playing 记录，避免它们永久占用唯一活动对局槽位。
+    # R1: 尝试恢复进行中的对局（有检查点则续跑，无检查点则终止）
+    from sqlalchemy import select
+
     from app.db.session import async_session_factory
-    from app.services.game_service import GameService
+    from app.models.game import Game, GameStatus
     async with async_session_factory() as session:
-        terminated = await GameService(session).terminate_unrecoverable_playing_games()
-        await session.commit()
-    if terminated:
+        result = await session.execute(select(Game).where(Game.status == GameStatus.PLAYING))
+        playing_games = result.scalars().all()
+    if playing_games:
         import logging
-        logging.getLogger(__name__).warning(
-            "启动时终止了 %s 个无法恢复的 playing 对局", terminated
-        )
+        log = logging.getLogger(__name__)
+        db_path = settings.data_dir / "werewolf.db"
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        for game in playing_games:
+            config = {"configurable": {"thread_id": game.id}}
+            async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+                saved = await checkpointer.aget(config)
+            if saved:
+                log.info(f"启动时恢复对局 {game.id[:8]}...（有检查点，续跑）")
+                from app.graphs.game_flow import resume_game
+                asyncio.create_task(resume_game(game.id))
+            else:
+                log.warning(f"启动时终止对局 {game.id[:8]}...（无检查点，无法恢复）")
+                async with async_session_factory() as session:
+                    g = await session.get(Game, game.id)
+                    if g:
+                        g.status = GameStatus.FINISHED
+                        g.end_reason = "interrupted_by_restart"
+                        from datetime import datetime
+                        g.finished_at = datetime.now()
+                await session.commit()
 
     # 启动 WebSocket 应用层心跳：周期性 ping 所有连接，顶住代理空闲超时并提前清理死连接
     from app.api.ws_handler import ws_manager
@@ -67,6 +86,10 @@ async def lifespan(app: FastAPI):
     yield  # ← 应用在此处开始接受请求，关闭时继续执行下方
 
     await ws_manager.stop_heartbeat()
+
+    # B4: 应用关闭时刷写剩余 AgentLog
+    from app.graphs.agent_graph import _flush_log_queue
+    _flush_log_queue()
 
 
 def create_app() -> FastAPI:

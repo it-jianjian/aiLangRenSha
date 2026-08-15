@@ -20,43 +20,45 @@
 import logging
 from typing import Any
 
-from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import END, START, StateGraph
 
 from app.db.session import async_session_factory
-from app.models.game import (
-    Game, GamePlayer, GameRound, GameMode, PlayerRole, PlayerType,
-)
-from app.graphs.state import GameFlowState
 from app.graphs.event_bus import record_event
+from app.graphs.nodes.day_phase import (
+    day_last_words_node,
+    day_speech_node,
+    day_start_node,
+)
 
 # ─── 导入所有节点函数 ─────────────────────────────────────
 from app.graphs.nodes.night_phase import (
-    night_start_node,
-    night_werewolf_node,
-    night_seer_node,
-    night_witch_node,
-    night_guard_node,
     hunter_revenge_node,
+    night_parallel_actions_node,
     night_settle_node,
-)
-from app.graphs.nodes.day_phase import (
-    day_start_node,
-    day_last_words_node,
-    day_speech_node,
-)
-from app.graphs.nodes.vote_phase import (
-    day_vote_node,
-    day_vote_result_node,
-    day_pk_node,
-    day_eliminate_node,
-    day_end_node,
+    night_start_node,
+    night_witch_node,
 )
 from app.graphs.nodes.victory_check import (
-    victory_check_node,
     game_over_node,
+    route_after_pk,
     route_after_victory,
     route_after_vote_result,
-    route_after_pk,
+    victory_check_node,
+)
+from app.graphs.nodes.vote_phase import (
+    day_eliminate_node,
+    day_end_node,
+    day_pk_node,
+    day_vote_node,
+    day_vote_result_node,
+)
+from app.graphs.state import GameFlowState
+from app.models.game import (
+    Game,
+    GamePlayer,
+    PlayerRole,
+    PlayerType,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,12 +107,10 @@ def build_game_graph() -> StateGraph:
     graph = StateGraph(GameFlowState)
 
     # ─── 添加所有节点 ───
-    # 夜晚阶段
+    # 夜晚阶段（阶段 1：狼人+预言家+守卫并行）
     graph.add_node("night_start", night_start_node)
-    graph.add_node("night_werewolf", night_werewolf_node)
-    graph.add_node("night_seer", night_seer_node)
+    graph.add_node("night_parallel_actions", night_parallel_actions_node)
     graph.add_node("night_witch", night_witch_node)
-    graph.add_node("night_guard", night_guard_node)
     graph.add_node("hunter_revenge", hunter_revenge_node)
     graph.add_node("night_settle", night_settle_node)
 
@@ -134,12 +134,10 @@ def build_game_graph() -> StateGraph:
     # 入口：START → 夜晚开始（第一轮）
     graph.add_edge(START, "night_start")
 
-    # 夜晚流程链：开始 → 狼人 → 预言家 → 女巫 → 结算 → 胜负检查
-    graph.add_edge("night_start", "night_werewolf")
-    graph.add_edge("night_werewolf", "night_seer")
-    graph.add_edge("night_seer", "night_witch")
-    graph.add_edge("night_witch", "night_guard")
-    graph.add_edge("night_guard", "night_settle")
+    # 夜晚流程链：开始 → 并行(狼+预言+守卫) → 女巫 → 结算 → 胜负检查
+    graph.add_edge("night_start", "night_parallel_actions")
+    graph.add_edge("night_parallel_actions", "night_witch")
+    graph.add_edge("night_witch", "night_settle")
     graph.add_edge("night_settle", "hunter_revenge")
 
     # 白天流程链：开始 → 遗言 → 发言 → 投票 → 投票结果
@@ -358,22 +356,22 @@ async def run_game(game_id: str):
         # ─── 2. 构建并编译图 ───
         graph = build_game_graph()
 
-        # 编译图（P2 不使用 checkpointer 和 interrupt，P3 阶段为混合模式添加）
-        # P3 示例:
-        #   app = graph.compile(
-        #       checkpointer=MemorySaver(),
-        #       interrupt_before=["night_werewolf", "night_seer", ...]
-        #   )
-        app = graph.compile()
+        # R1: 使用 AsyncSqliteSaver 持久化检查点，服务重启后可续跑
+        from app.config import get_settings
+        settings = get_settings()
+        db_path = settings.data_dir / "werewolf.db"
 
-        # ─── 3. 启动执行 ───
-        # ainvoke() 会执行整个图直到到达 END 节点
-        # 每个 async 节点函数会被自动 await
-        config = {
-            "configurable": {"thread_id": game_id},
-            "recursion_limit": 200,  # 默认 25 步不够，狼人杀一局可能需要 100+ 步
-        }
-        final_state = await app.ainvoke(initial_state, config)
+        async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+            app = graph.compile(checkpointer=checkpointer)
+
+            # ─── 3. 启动执行 ───
+            # ainvoke() 会执行整个图直到到达 END 节点
+            # 每个 async 节点函数会被自动 await
+            config = {
+                "configurable": {"thread_id": game_id},
+                "recursion_limit": 200,  # 默认 25 步不够，狼人杀一局可能需要 100+ 步
+            }
+            final_state = await app.ainvoke(initial_state, config)
 
         logger.info(
             f"[GameFlow] 对局 {game_id} 完成！"
@@ -398,3 +396,38 @@ async def run_game(game_id: str):
                 await session.commit()
         except Exception as db_err:
             logger.error(f"[GameFlow] 异常状态持久化失败: {db_err}")
+
+
+async def resume_game(game_id: str):
+    """R1: 从检查点恢复中断的对局
+
+    服务重启后，扫描 status=playing 的对局，尝试从最近的检查点续跑。
+    如果没有检查点（首次运行从未保存过），则从头开始。
+    """
+    from app.config import get_settings
+
+    logger.info(f"[GameFlow] 尝试恢复对局 {game_id}")
+    settings = get_settings()
+    db_path = settings.data_dir / "werewolf.db"
+
+    async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+        graph = build_game_graph()
+        app = graph.compile(checkpointer=checkpointer)
+
+        config = {
+            "configurable": {"thread_id": game_id},
+            "recursion_limit": 200,
+        }
+
+        # 检查是否有检查点
+        saved = await checkpointer.aget(config)
+        if saved:
+            # 从检查点续跑
+            logger.info(f"[GameFlow] 对局 {game_id} 找到检查点，从断点续跑")
+            async for event in app.astream(None, config):
+                pass
+        else:
+            # 无检查点，从头开始
+            logger.info(f"[GameFlow] 对局 {game_id} 无检查点，从头开始")
+            initial_state = await _load_initial_state(game_id)
+            await app.ainvoke(initial_state, config)

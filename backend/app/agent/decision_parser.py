@@ -73,7 +73,7 @@ def parse_decision(llm_output: str) -> Optional[dict[str, Any]]:
                 return data
         except (json.JSONDecodeError, TypeError):
             pass
-    
+
     # ─── 策畧 4: 宽松提取（尝试提取所有 JSON 块）───
     for match in re.finditer(r'\{.*\}', text, re.DOTALL):
         try:

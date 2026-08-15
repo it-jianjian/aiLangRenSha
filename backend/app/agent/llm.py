@@ -15,9 +15,9 @@
 """
 
 import json
-import re
-import random
 import logging
+import random
+import re
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -29,10 +29,20 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+# 简单决策类型（只需要输出一个数字或布尔值）
+SIMPLE_ACTION_TYPES = {"kill", "verify", "save", "poison", "vote", "guard", "hunter_shoot"}
+# 发言类决策类型（需要生成长文本）
+SPEECH_ACTION_TYPES = {"speech", "last_words"}
+
+# 模块级 LLM 实例缓存：(model, temperature) → ChatOpenAI
+_llm_cache: dict[tuple[str, float], BaseChatModel] = {}
+
+
 def create_llm(
     seat_number: Optional[int] = None,
     model_name: Optional[str] = None,
     temperature: Optional[float] = None,
+    action_type: Optional[str] = None,
 ) -> BaseChatModel:
     """从配置创建 LangChain ChatModel 实例
 
@@ -40,15 +50,18 @@ def create_llm(
         seat_number: 座位号（1~12），用于查找多实例配置
         model_name: 模型名称（覆盖 seat_number 查找结果）
         temperature: 温度参数（覆盖 seat_number 查找结果）
+        action_type: 决策类型（kill/verify/save/poison/speech/vote/last_words/guard/hunter_shoot），
+                     用于按决策难度路由到不同模型
 
     返回:
         BaseChatModel 实例
 
     查找优先级：
         1. 显式传入 model_name → 直接使用该模型
-        2. 传入 seat_number → 查找 settings 中该座位的独立配置
-        3. 回退到默认 LLM（settings.llm_model_name）
-        4. API Key 未配置 → 降级为 MockWerewolfLLM
+        2. action_type 映射 → 简单决策走小模型、发言走大模型（阶段 3）
+        3. 传入 seat_number → 查找 settings 中该座位的独立配置
+        4. 回退到默认 LLM（settings.llm_model_name）
+        5. API Key 未配置 → 降级为 MockWerewolfLLM
     """
     settings = get_settings()
     api_key = settings.llm_api_key
@@ -56,6 +69,13 @@ def create_llm(
     # 确定最终使用的模型和温度
     final_model = model_name
     final_temp = temperature
+
+    # 阶段 3: 按 action_type 路由（优先级 2，仅在无显式 model_name 时生效）
+    if not final_model and action_type:
+        if action_type in SIMPLE_ACTION_TYPES and settings.llm_action_simple_model:
+            final_model = settings.llm_action_simple_model
+        elif action_type in SPEECH_ACTION_TYPES and settings.llm_action_speech_model:
+            final_model = settings.llm_action_speech_model
 
     if not final_model and seat_number:
         inst = settings.get_llm_instance(seat_number)
@@ -68,6 +88,14 @@ def create_llm(
     if final_temp is None:
         final_temp = settings.llm_temperature
 
+    # L3: 按 action_type 分级超时
+    if action_type in SIMPLE_ACTION_TYPES:
+        final_timeout = settings.llm_timeout_simple or settings.llm_timeout
+    elif action_type in SPEECH_ACTION_TYPES:
+        final_timeout = settings.llm_timeout_speech or settings.llm_timeout
+    else:
+        final_timeout = settings.llm_timeout
+
     # API Key 未配置 → Mock 降级
     if not api_key or api_key in ("your-api-key-here", "your-deepseek-api-key-here", "not-set", "", "填你的硅基流动APIKey"):
         logger.warning(f"[LLM] API Key 未配置，使用 MockWerewolfLLM 降级运行 (seat={seat_number})")
@@ -75,15 +103,21 @@ def create_llm(
 
     from langchain_openai import ChatOpenAI
 
-    return ChatOpenAI(
+    cache_key = (final_model, final_temp, final_timeout)
+    if cache_key in _llm_cache:
+        return _llm_cache[cache_key]
+
+    llm_instance = ChatOpenAI(
         model=final_model,
         base_url=settings.llm_base_url,
         api_key=api_key,
         temperature=final_temp if final_temp is not None else settings.llm_temperature,
-        timeout=settings.llm_timeout,
+        timeout=final_timeout,
         max_retries=1,
         max_tokens=2048,
     )
+    _llm_cache[cache_key] = llm_instance
+    return llm_instance
 
 
 class MockWerewolfLLM(BaseChatModel):

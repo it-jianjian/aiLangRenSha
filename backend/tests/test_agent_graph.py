@@ -9,9 +9,8 @@
 - 验证信息隔离在子图中生效
 """
 
-import pytest
-from app.graphs.agent_graph import run_agent, AgentState
 from app.agent.llm import MockWerewolfLLM
+from app.graphs.agent_graph import AgentState, run_agent
 
 
 class FixedDecisionLLM(MockWerewolfLLM):
@@ -127,7 +126,7 @@ class TestAgentSubgraph:
     def test_run_agent_fallback_on_parse_failure(self):
         """LLM 返回不可解析内容时应降级为随机决策"""
         from langchain_core.language_models import BaseChatModel
-        from langchain_core.messages import AIMessage, BaseMessage
+        from langchain_core.messages import AIMessage
         from langchain_core.outputs import ChatGeneration, ChatResult
 
         class BrokenLLM(BaseChatModel):
@@ -185,8 +184,9 @@ class TestAgentSubgraph:
 
     def test_run_agent_persists_agent_log_with_filtered_context_and_fallback_info(self, tmp_path, monkeypatch):
         """run_agent 完成后应持久化 AgentLog，包含过滤上下文、原始输出、解析值和 fallback 标记。"""
-        from sqlalchemy import create_engine, select, text
+        from sqlalchemy import create_engine, select
         from sqlalchemy.orm import Session
+
         from app.db.session import Base
         from app.models.game import AgentLog, Game
 
@@ -200,12 +200,16 @@ class TestAgentSubgraph:
 
         # 让 run_agent 内部的 sync 引擎指向临时库
         import app.graphs.agent_graph as ag_mod
-        original_get_sync_engine = getattr(ag_mod, "_get_sync_engine", None)
         monkeypatch.setattr(ag_mod, "_get_sync_engine", lambda: sync_engine)
 
         state = _make_test_state()
         state["game_context"]["game_id"] = "game-log-1"
         result = run_agent(state)
+
+        # B4: 队列式持久化，需等待写入完成
+        ag_mod._flush_log_queue()
+        import time
+        time.sleep(0.2)  # 给线程一点时间完成写库
 
         with Session(sync_engine) as session:
             logs = session.execute(select(AgentLog).where(AgentLog.game_id == "game-log-1")).scalars().all()
@@ -220,4 +224,6 @@ class TestAgentSubgraph:
         assert log.is_fallback == result["is_fallback"]
         assert log.latency_ms is not None
 
+        # 重置单例引擎，避免影响其他测试
+        ag_mod._sync_engine = None
         sync_engine.dispose()

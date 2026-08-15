@@ -7,12 +7,10 @@ from pathlib import Path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.agent.context_filter import filter_context
 from app.db.migrations import upgrade_database
 from app.db.session import Base
-from app.models.game import GamePlayer
-from app.models.game import PlayerRole
-from app.agent.context_filter import filter_context
-from app.services.game_service import AI_PERSONAS
+from app.models.game import GamePlayer, PlayerRole
 from app.services.game_rules import (
     OFFICIAL_ROSTERS,
     can_hunter_shoot,
@@ -20,6 +18,7 @@ from app.services.game_rules import (
     resolve_night_deaths,
     validate_roster,
 )
+from app.services.game_service import AI_PERSONAS
 
 
 def test_official_twelve_player_roster_is_valid():
@@ -118,6 +117,7 @@ def test_all_backend_sources_compile_before_starting_a_game():
 def test_hunter_revenge_does_not_implicitly_scan_dead_hunters(monkeypatch):
     """hunter_revenge_node 只消费显式 pending_hunter_shot，不扫描本轮死者推导资格。"""
     import asyncio
+
     from app.graphs.nodes import night_phase
 
     recorded_events = []
@@ -156,6 +156,7 @@ def test_hunter_revenge_does_not_implicitly_scan_dead_hunters(monkeypatch):
 def test_hunter_revenge_processes_explicit_pending_hunter_shot(monkeypatch):
     """hunter_revenge_node 在 pending_hunter_shot 显式设置时正常处理猎人开枪。"""
     import asyncio
+
     from app.graphs.nodes import night_phase
 
     recorded_events = []
@@ -199,8 +200,10 @@ def test_legacy_2_0_database_upgrades_before_loading_game_player(tmp_path):
     database_path = tmp_path / "legacy-2-0.db"
     engine = create_engine(f"sqlite:///{database_path}")
     try:
+        # 从 ORM metadata 建表，排除 game_players/agent_logs/agent_steps（由迁移添加新列/表）
         legacy_tables = [
-            table for table in Base.metadata.sorted_tables if table.name != "game_players"
+            table for table in Base.metadata.sorted_tables
+            if table.name not in ("game_players", "agent_logs", "agent_steps")
         ]
         Base.metadata.create_all(engine, tables=legacy_tables)
         with engine.begin() as connection:
@@ -230,6 +233,25 @@ def test_legacy_2_0_database_upgrades_before_loading_game_player(tmp_path):
                     is_alive, created_at, updated_at
                 ) VALUES ('player-1', 'game-1', 1, 'human', 'villager', '玩家', 1,
                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            )
+            # 旧版 agent_logs（无 prompt_tokens/completion_tokens/model_name）
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE agent_logs (
+                    id VARCHAR(36) PRIMARY KEY,
+                    game_id VARCHAR(36) NOT NULL,
+                    round_number INTEGER NOT NULL,
+                    seat_number INTEGER NOT NULL,
+                    action_type VARCHAR(32) NOT NULL,
+                    context_json TEXT,
+                    prompt_text TEXT,
+                    llm_raw_output TEXT,
+                    parsed_decision TEXT,
+                    is_fallback BOOLEAN NOT NULL,
+                    latency_ms INTEGER,
+                    created_at DATETIME NOT NULL
+                )
                 """
             )
             connection.exec_driver_sql(

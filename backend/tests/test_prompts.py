@@ -9,13 +9,13 @@ Prompt 四部分：System Prompt + Role Strategy + Game Context + Decision Instr
 """
 
 import pytest
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agent.prompts import (
-    get_role_strategy,
-    get_decision_instruction,
-    build_agent_prompt,
     _format_game_context,
+    build_agent_prompt,
+    get_decision_instruction,
+    get_role_strategy,
 )
 
 

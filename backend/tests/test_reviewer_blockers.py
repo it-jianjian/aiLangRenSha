@@ -121,7 +121,7 @@ async def test_bridge_rejects_action_from_wrong_seat_before_waking_waiter():
     ))
     await asyncio.sleep(0)
 
-    with pytest.raises(HTTPException, match="当前等待"):
+    with pytest.raises(HTTPException, match="没有等待中"):
         bridge.submit_action("game-1", 3, {"action_type": "guard", "target_seat": 2})
 
     assert not waiting.done()

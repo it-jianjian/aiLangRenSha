@@ -2,8 +2,8 @@
 
 import json
 
-from app.api.schemas.game_schemas import ReplayStep
 from app.api.replay_router import _event_description
+from app.api.schemas.game_schemas import ReplayStep
 
 
 class TestReplayStepSchema:

@@ -19,12 +19,14 @@ PRD 胜负规则：
 - 同时满足双方胜利 → 好人优先（鼓励使用技能）
 """
 
+import asyncio
 import logging
 from datetime import datetime
 
-from app.models.game import PlayerRole, Winner, GameStatus
+from app.graphs.event_bus import record_event
+from app.graphs.nodes import timed_node
 from app.graphs.state import GameFlowState
-from app.graphs.event_bus import record_event, get_alive_players
+from app.models.game import GameStatus, PlayerRole, Winner
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ def _count_alive_by_faction(players: list[dict]) -> tuple[int, int]:
     return werewolf, good
 
 
+@timed_node
 async def victory_check_node(state: GameFlowState) -> dict:
     """胜负判定节点
 
@@ -113,6 +116,7 @@ async def victory_check_node(state: GameFlowState) -> dict:
     return {"game_over": game_over, "winner": winner, "end_reason": end_reason}
 
 
+@timed_node
 async def game_over_node(state: GameFlowState) -> dict:
     """游戏结束节点
 
@@ -134,12 +138,13 @@ async def game_over_node(state: GameFlowState) -> dict:
             event_data={"deaths": death_info},
         )
         logger.info(f"[GameOver] 公布最后夜晚死亡: {night_deaths}")
-        await __import__("asyncio").sleep(0.3)  # 让前端有时间渲染死亡信息
+        await asyncio.sleep(0.3)  # 让前端有时间渲染死亡信息
 
     # ─── 持久化到数据库 ───
+    from sqlalchemy import select
+
     from app.db.session import async_session_factory
     from app.models.game import Game, GameRound
-    from sqlalchemy import select
 
     async with async_session_factory() as session:
         result = await session.execute(select(Game).where(Game.id == state["game_id"]))

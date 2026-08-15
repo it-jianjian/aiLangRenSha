@@ -17,20 +17,46 @@ PRD 规则要点：
 import asyncio
 import logging
 
-from app.graphs.state import GameFlowState
+from app.config import get_settings
+from app.db.session import async_session_factory
 from app.graphs.event_bus import (
+    get_alive_players,
     record_event,
     save_speech,
-    get_alive_players,
 )
-from app.graphs.nodes.agent_nodes import call_agent_villager_speech, call_agent_last_words
+from app.graphs.nodes import timed_node
+from app.graphs.nodes.agent_nodes import call_agent_stream
+from app.graphs.state import GameFlowState
 from app.services.human_action_bridge import human_bridge
 
 logger = logging.getLogger(__name__)
 
-AI_ACTION_DELAY = 1.0  # 发言间隔（秒），让用户有时间阅读
+
+async def _push_speech_chunk(game_id: str, seat: int, round_num: int, delta: str):
+    """推送单个 speech_chunk 事件到 WebSocket"""
+    try:
+        from app.api.ws_handler import ws_manager
+        await ws_manager.broadcast(game_id, {
+            "type": "speech_chunk",
+            "data": {"seat": seat, "round": round_num, "delta": delta},
+        })
+    except Exception as e:
+        logger.debug(f"[Speech] chunk 推送失败: {e}")
 
 
+async def _push_speech_end(game_id: str, seat: int, round_num: int):
+    """推送 speech_end 事件"""
+    try:
+        from app.api.ws_handler import ws_manager
+        await ws_manager.broadcast(game_id, {
+            "type": "speech_end",
+            "data": {"seat": seat, "round": round_num},
+        })
+    except Exception as e:
+        logger.debug(f"[Speech] end 推送失败: {e}")
+
+
+@timed_node
 async def day_start_node(state: GameFlowState) -> dict:
     """白天开始节点
 
@@ -44,9 +70,9 @@ async def day_start_node(state: GameFlowState) -> dict:
     night_deaths = state["night_deaths"]
 
     # ─── 持久化死亡信息到 GamePlayer 表 ───
-    from app.db.session import async_session_factory
-    from app.models.game import GamePlayer
     from sqlalchemy import select
+
+    from app.models.game import GamePlayer
 
     if night_deaths:
         async with async_session_factory() as session:
@@ -86,6 +112,7 @@ async def day_start_node(state: GameFlowState) -> dict:
     return {}
 
 
+@timed_node
 async def day_last_words_node(state: GameFlowState) -> dict:
     """遗言环节节点
 
@@ -112,7 +139,9 @@ async def day_last_words_node(state: GameFlowState) -> dict:
     for seat in night_deaths:
         player = next(p for p in state["players"] if p["seat_number"] == seat)
         if not player["is_alive"]:  # 确认已死亡
-            await asyncio.sleep(AI_ACTION_DELAY)
+            settings = get_settings()
+            if settings.ai_action_delay_day > 0:
+                await asyncio.sleep(settings.ai_action_delay_day)
 
             # 关键修复：把当前已有发言+遗言写入 state，让后续 AI 能看到
             state["speeches"] = current_speeches
@@ -125,7 +154,13 @@ async def day_last_words_node(state: GameFlowState) -> dict:
                 )
                 content = action.get("content", "（沉默）")
             else:
-                content = call_agent_last_words(state, player)
+                # 阶段 2：流式遗言
+                content = await call_agent_stream(
+                    state, player, "last_words",
+                    on_chunk=lambda d: asyncio.create_task(_push_speech_chunk(state["game_id"], seat, state["current_round"], d)),
+                )
+                if not content or not content.strip():
+                    content = f"{seat}号没有留下遗言。"
 
             await save_speech(state["game_id"], state["current_round"], seat, content)
             await record_event(
@@ -133,6 +168,8 @@ async def day_last_words_node(state: GameFlowState) -> dict:
                 seat_number=seat,
                 event_data={"content": content},
             )
+            # 阶段 2：推送 speech_end
+            await _push_speech_end(state["game_id"], seat, state["current_round"])
             # 把遗言加入 speeches 列表，让后续玩家能看到
             current_speeches.append({"seat": seat, "content": content})
             logger.info(f"[LastWords] {seat}号遗言: {content[:50]}...")
@@ -140,6 +177,7 @@ async def day_last_words_node(state: GameFlowState) -> dict:
     return {"speeches": current_speeches}
 
 
+@timed_node
 async def day_speech_node(state: GameFlowState) -> dict:
     """发言环节节点
 
@@ -158,8 +196,10 @@ async def day_speech_node(state: GameFlowState) -> dict:
     # 按座位号排序
     alive_players.sort(key=lambda p: p["seat_number"])
 
+    settings = get_settings()
     for player in alive_players:
-        await asyncio.sleep(AI_ACTION_DELAY)
+        if settings.ai_action_delay_day > 0:
+            await asyncio.sleep(settings.ai_action_delay_day)
 
         # 关键修复：把当前轮已积累的发言写入 state，让后续 AI 能看到本轮发言
         state["speeches"] = speeches
@@ -172,7 +212,17 @@ async def day_speech_node(state: GameFlowState) -> dict:
             )
             content = action.get("content", "（该玩家选择沉默）")
         else:
-            content = call_agent_villager_speech(state, player)
+            # 阶段 2：流式输出（打字机效果）
+            chunks: list[str] = []
+            def on_chunk(delta: str):
+                chunks.append(delta)
+
+            content = await call_agent_stream(
+                state, player, "speech",
+                on_chunk=lambda d: asyncio.create_task(_push_speech_chunk(state["game_id"], player["seat_number"], state["current_round"], d)),
+            )
+            if not content or not content.strip():
+                content = f"{player['seat_number']}号选择沉默。"
 
         speech = {"seat": player["seat_number"], "content": content}
         speeches.append(speech)
@@ -186,6 +236,10 @@ async def day_speech_node(state: GameFlowState) -> dict:
             seat_number=player["seat_number"],
             event_data={"content": content},
         )
+
+        # 阶段 2：推送 speech_end
+        if player["player_type"] != "human":
+            await _push_speech_end(state["game_id"], player["seat_number"], state["current_round"])
 
         logger.info(f"[Speech] {player['seat_number']}号({player['player_name']}): {content[:40]}...")
 

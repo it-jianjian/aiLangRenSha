@@ -27,8 +27,8 @@ async def _night_start_db(tmp_path):
 @pytest.mark.asyncio
 async def test_night_start_records_pk_details_in_history(tmp_path, monkeypatch):
     """night_start 应将上轮平票首轮投票、PK 发言、候选人写入 game_history。"""
-    from app.graphs.nodes import night_phase
     import app.db.session
+    from app.graphs.nodes import night_phase
 
     engine, factory = await _night_start_db(tmp_path)
 

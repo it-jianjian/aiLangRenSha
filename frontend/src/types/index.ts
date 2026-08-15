@@ -123,6 +123,8 @@ export type WSMessageType =
   | 'last_words'
   | 'speech'
   | 'speech_prompt'
+  | 'speech_chunk'
+  | 'speech_end'
   | 'vote_prompt'
   | 'vote_result'
   | 'pk_announce'
@@ -133,3 +135,16 @@ export type WSMessageType =
   | 'ai_reasoning'
   | 'error'
   | 'timeout_warning'
+
+// ─── 流式发言事件 ────────────────────────────────────────
+export interface SpeechChunkMessage {
+  type: 'speech_chunk'
+  data: { seat: number; round: number; delta: string }
+  timestamp: string
+}
+
+export interface SpeechEndMessage {
+  type: 'speech_end'
+  data: { seat: number; round: number }
+  timestamp: string
+}

@@ -1,12 +1,13 @@
 """AI 狼人杀 — WebSocket 连接管理器单元测试"""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.ws_handler import ConnectionManager, extract_authentication_token, resolve_player_binding
 from app.db.session import Base
-from app.models.game import Game, GamePlayer, GameMode, PlayerType
+from app.models.game import Game, GameMode, GamePlayer, PlayerType
 from app.services.game_service import GameService
 
 

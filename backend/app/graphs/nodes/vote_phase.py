@@ -20,77 +20,110 @@ PRD 规则要点：
 import asyncio
 import logging
 
-from app.graphs.state import GameFlowState
+from app.config import get_settings
 from app.graphs.event_bus import (
     broadcast_persisted_event,
     create_game_event,
-    record_event,
-    save_speech,
     get_alive_players,
     kill_player,
+    record_event,
+    save_speech,
 )
-from app.graphs.nodes.agent_nodes import call_agent_villager_vote, call_agent_villager_speech, call_agent_last_words
-from app.services.human_action_bridge import human_bridge
+from app.graphs.nodes import timed_node
+from app.graphs.nodes.agent_nodes import call_agent_async, call_agent_last_words, call_agent_stream
+from app.graphs.state import GameFlowState
 from app.models.game import PlayerRole
 from app.services.game_rules import can_hunter_shoot
+from app.services.human_action_bridge import human_bridge
 
 logger = logging.getLogger(__name__)
 
-AI_ACTION_DELAY = 0.8  # 投票间隔（秒）
 HUMAN_LAST_WORDS_TIMEOUT_SECONDS = 60
 
 
+@timed_node
 async def day_vote_node(state: GameFlowState) -> dict:
-    """投票环节节点
+    """投票环节节点（阶段 1 并行化）
 
-    职责：所有存活玩家投票选择要淘汰的目标
-
-    规则：
-    - 每位存活玩家投 1 票，目标为任意存活的其他玩家
-    - 不能投自己
-    - 允许弃票（target_seat = None）
-    - 投票为明票制：结果公开
-
-    P3: AI 通过 Agent 推理投票（可伪装身份）
+    所有 AI 投票与所有人类 wait_for_action 一起 gather 并行。
+    并行后 AI 看不到本轮他人票（预期行为）。
     """
-    votes: dict[int, int | None] = {}
+    settings = get_settings()
     alive_players = get_alive_players(state["players"])
+    votes: dict[int, int | None] = {}
 
+    tasks = []
     for player in alive_players:
-        await asyncio.sleep(AI_ACTION_DELAY)
-
-        # 关键修复：把当前轮已积累的投票写入 state，让后续 AI 能看到本轮投票
-        state["votes"] = votes
-
         other_seats = [p["seat_number"] for p in alive_players if p["seat_number"] != player["seat_number"]]
+        tasks.append(_do_vote(state, player, other_seats))
 
-        if player["player_type"] == "human":
-            action = await human_bridge.wait_for_action(
-                state["game_id"], "vote",
-                {"seat_number": player["seat_number"], "player_name": player["player_name"], "role": player.get("role"),
-                 "phase": "day", "allowed_target_seats": other_seats, "empty_target_actions": ["vote"]},
-            )
-            target = action.get("target_seat")
-        else:
-            target = call_agent_villager_vote(state, player)
+    vote_results = await asyncio.gather(*tasks)
 
-        # 校验：不能投自己，不能投已淘汰的
-        if target is not None and target not in other_seats:
-            target = None  # 非法投票 → 视为弃票
+    # 合并投票结果
+    for voter_seat, target in vote_results:
+        votes[voter_seat] = target
 
-        votes[player["seat_number"]] = target
-
-        # 记录投票事件
-        await record_event(
-            state["game_id"], state["current_round"], "day", "vote",
-            seat_number=player["seat_number"],
-            event_data={"target": target, "is_pk": False},
-        )
+    # 并行完成后统一 delay
+    if settings.ai_action_delay_vote > 0:
+        await asyncio.sleep(settings.ai_action_delay_vote)
 
     logger.info(f"[Vote] 投票结果: {votes}")
     return {"votes": votes, "is_pk": False, "pk_seats": []}
 
 
+async def _do_vote(state, player, other_seats) -> tuple[int, int | None]:
+    """单玩家投票（可被 gather 并行调用）"""
+    if player["player_type"] == "human":
+        action = await human_bridge.wait_for_action(
+            state["game_id"], "vote",
+            {"seat_number": player["seat_number"], "player_name": player["player_name"],
+             "role": player.get("role"), "phase": "day",
+             "allowed_target_seats": other_seats, "empty_target_actions": ["vote"]},
+        )
+        target = action.get("target_seat")
+    else:
+        target = await call_agent_async(state, player, "vote")
+
+    # 校验：不能投自己，不能投已淘汰的
+    if target is not None and target not in other_seats:
+        target = None  # 非法投票 → 视为弃票
+
+    await record_event(
+        state["game_id"], state["current_round"], "day", "vote",
+        seat_number=player["seat_number"],
+        event_data={"target": target, "is_pk": False},
+    )
+
+    return (player["seat_number"], target)
+
+
+async def _do_pk_vote(state, player, pk_seats) -> tuple[int, int | None]:
+    """PK 重投单玩家投票（可被 gather 并行调用）"""
+    if player["player_type"] == "human":
+        action = await human_bridge.wait_for_action(
+            state["game_id"], "vote",
+            {"seat_number": player["seat_number"], "player_name": player["player_name"],
+             "role": player.get("role"), "phase": "day",
+             "allowed_target_seats": pk_seats, "empty_target_actions": ["vote"]},
+        )
+        target = action.get("target_seat")
+    else:
+        scoped_state = {**state, "allowed_target_seats": list(pk_seats)}
+        target = await call_agent_async(scoped_state, player, "vote")
+
+    if target is not None and target not in pk_seats:
+        target = None
+
+    await record_event(
+        state["game_id"], state["current_round"], "day", "pk_vote",
+        seat_number=player["seat_number"],
+        event_data={"target": target},
+    )
+
+    return (player["seat_number"], target)
+
+
+@timed_node
 async def day_vote_result_node(state: GameFlowState) -> dict:
     """投票结果节点
 
@@ -147,6 +180,7 @@ async def day_vote_result_node(state: GameFlowState) -> dict:
         }
 
 
+@timed_node
 async def day_pk_node(state: GameFlowState) -> dict:
     """PK 环节节点
 
@@ -159,23 +193,31 @@ async def day_pk_node(state: GameFlowState) -> dict:
 
     PRD 规则：PK 后再次平票 → 本轮无人淘汰（平安日）
     """
+    settings = get_settings()
     pk_seats = state["pk_seats"]
     pk_speeches: list[dict] = []
 
-    # ─── PK 发言 ───
+    # ─── PK 发言（串行，游戏规则） ───
     for seat in sorted(pk_seats):
         player = next(p for p in state["players"] if p["seat_number"] == seat)
-        await asyncio.sleep(AI_ACTION_DELAY)
+        if settings.ai_action_delay_day > 0:
+            await asyncio.sleep(settings.ai_action_delay_day)
 
         if player["player_type"] == "human":
-            # 人类 PK 候选人：等待提交发言
             action = await human_bridge.wait_for_action(
                 state["game_id"], "speech",
                 {"seat_number": player["seat_number"], "player_name": player["player_name"], "role": player.get("role")},
             )
             content = action.get("content", "（该玩家选择沉默）")
         else:
-            content = call_agent_villager_speech(state, player)
+            from app.graphs.nodes.day_phase import _push_speech_chunk, _push_speech_end
+            content = await call_agent_stream(
+                state, player, "speech",
+                on_chunk=lambda d: asyncio.create_task(_push_speech_chunk(state["game_id"], seat, state["current_round"], d)),
+            )
+            if not content or not content.strip():
+                content = f"{seat}号选择沉默。"
+            await _push_speech_end(state["game_id"], seat, state["current_round"])
 
         await save_speech(state["game_id"], state["current_round"], seat, content, is_pk=True)
         await record_event(
@@ -185,37 +227,24 @@ async def day_pk_node(state: GameFlowState) -> dict:
         pk_speeches.append({"seat": seat, "content": content})
         logger.info(f"[PK] {seat}号 PK 发言: {content[:40]}...")
 
-    # ─── PK 重投（非 PK 玩家投票，只能在 PK 候选人中选择） ───
+    # ─── PK 重投（并行，非 PK 玩家投票，只能在 PK 候选人中选择） ───
     alive_non_pk = [
         p for p in get_alive_players(state["players"])
         if p["seat_number"] not in pk_seats
     ]
 
-    pk_votes: dict[int, int | None] = {}
+    pk_vote_tasks = []
     for voter in alive_non_pk:
-        await asyncio.sleep(AI_ACTION_DELAY)
+        pk_vote_tasks.append(_do_pk_vote(state, voter, pk_seats))
 
-        if voter["player_type"] == "human":
-            action = await human_bridge.wait_for_action(
-                state["game_id"], "vote",
-                {"seat_number": voter["seat_number"], "player_name": voter["player_name"], "role": voter.get("role"),
-                 "phase": "day", "allowed_target_seats": pk_seats, "empty_target_actions": ["vote"]},
-            )
-            target = action.get("target_seat")
-        else:
-            # 限定 AI 只能投 PK 候选人（scoped_state 注入 allowed_target_seats）
-            scoped_state = {**state, "allowed_target_seats": list(pk_seats)}
-            target = call_agent_villager_vote(scoped_state, voter)
+    pk_vote_results = await asyncio.gather(*pk_vote_tasks)
 
-        if target is not None and target not in pk_seats:
-            target = None
+    pk_votes: dict[int, int | None] = {}
+    for voter_seat, target in pk_vote_results:
+        pk_votes[voter_seat] = target
 
-        pk_votes[voter["seat_number"]] = target
-        await record_event(
-            state["game_id"], state["current_round"], "day", "pk_vote",
-            seat_number=voter["seat_number"],
-            event_data={"target": target},
-        )
+    if settings.ai_action_delay_vote > 0:
+        await asyncio.sleep(settings.ai_action_delay_vote)
 
     # ─── PK 计票 ───
     tally: dict[int, int] = {}
@@ -244,6 +273,7 @@ async def day_pk_node(state: GameFlowState) -> dict:
         return {"eliminated_seat": None, "votes": pk_votes, "pk_speeches": pk_speeches}
 
 
+@timed_node
 async def day_eliminate_node(state: GameFlowState) -> dict:
     """淘汰+遗言节点
 
@@ -254,6 +284,7 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
 
     返回：更新后的 players
     """
+    settings = get_settings()
     seat = state["eliminated_seat"]
     if seat is None:
         return {}
@@ -264,9 +295,10 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
     players = kill_player(players, seat, state["current_round"], "day", "voted_out")
 
     # ─── 持久化到 DB ───
+    from sqlalchemy import select
+
     from app.db.session import async_session_factory
     from app.models.game import GamePlayer
-    from sqlalchemy import select
 
     async with async_session_factory() as session:
         eliminate_event = create_game_event(
@@ -298,7 +330,8 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
 
     # ─── 遗言（有界等待，超时按沉默继续猎人/胜负/下一轮） ───
     player = next(p for p in state["players"] if p["seat_number"] == seat)
-    await asyncio.sleep(AI_ACTION_DELAY)
+    if settings.ai_action_delay_day > 0:
+        await asyncio.sleep(settings.ai_action_delay_day)
 
     if player["player_type"] == "human":
         action = await human_bridge.wait_for_action(
@@ -326,6 +359,7 @@ async def day_eliminate_node(state: GameFlowState) -> dict:
     return {"players": players, "pending_hunter_shot": pending_hunter_shot, "post_victory_route": "after_day"}
 
 
+@timed_node
 async def day_end_node(state: GameFlowState) -> dict:
     """白天结束节点
 
@@ -345,9 +379,10 @@ async def day_end_node(state: GameFlowState) -> dict:
         logger.info(f"[DayEnd] 平安日，连续计数: {new_count}")
 
         # 更新 GameRound 记录
+        from sqlalchemy import select
+
         from app.db.session import async_session_factory
         from app.models.game import GameRound
-        from sqlalchemy import select
 
         async with async_session_factory() as session:
             result = await session.execute(
