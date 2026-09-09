@@ -39,6 +39,8 @@ aiosqlite>=0.20.0,<1.0.0
 aiomysql>=0.2.0,<1.0.0
 # pymysql: MySQL 同步驱动（alembic 迁移等场景需要）
 pymysql>=1.1.0,<2.0.0
+# langgraph-checkpoint-mysql: LangGraph 检查点的 MySQL 后端（DATABASE_URL 切 MySQL 时检查点也落 MySQL）
+langgraph-checkpoint-mysql>=3.0.0,<4.0.0
 
 # ─── WebSocket ─────────────────────────────────────────────
 # websockets: Python WebSocket 库，FastAPI 内部用它处理 WS 连接

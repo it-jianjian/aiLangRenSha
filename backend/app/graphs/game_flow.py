@@ -20,7 +20,6 @@
 import logging
 from typing import Any
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.db.session import async_session_factory
@@ -356,12 +355,10 @@ async def run_game(game_id: str):
         # ─── 2. 构建并编译图 ───
         graph = build_game_graph()
 
-        # R1: 使用 AsyncSqliteSaver 持久化检查点，服务重启后可续跑
-        from app.config import get_settings
-        settings = get_settings()
-        db_path = settings.data_dir / "werewolf.db"
+        # R1: 持久化检查点（按 database_url 自动选 MySQL/SQLite），服务重启后可续跑
+        from app.db.checkpoint import get_checkpointer
 
-        async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+        async with get_checkpointer() as checkpointer:
             app = graph.compile(checkpointer=checkpointer)
 
             # ─── 3. 启动执行 ───
@@ -404,13 +401,11 @@ async def resume_game(game_id: str):
     服务重启后，扫描 status=playing 的对局，尝试从最近的检查点续跑。
     如果没有检查点（首次运行从未保存过），则从头开始。
     """
-    from app.config import get_settings
+    from app.db.checkpoint import get_checkpointer
 
     logger.info(f"[GameFlow] 尝试恢复对局 {game_id}")
-    settings = get_settings()
-    db_path = settings.data_dir / "werewolf.db"
 
-    async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+    async with get_checkpointer() as checkpointer:
         graph = build_game_graph()
         app = graph.compile(checkpointer=checkpointer)
 

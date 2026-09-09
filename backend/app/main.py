@@ -58,11 +58,10 @@ async def lifespan(app: FastAPI):
     if playing_games:
         import logging
         log = logging.getLogger(__name__)
-        db_path = settings.data_dir / "werewolf.db"
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        from app.db.checkpoint import get_checkpointer
         for game in playing_games:
             config = {"configurable": {"thread_id": game.id}}
-            async with AsyncSqliteSaver.from_conn_string(str(db_path).replace("\\", "/")) as checkpointer:
+            async with get_checkpointer() as checkpointer:
                 saved = await checkpointer.aget(config)
             if saved:
                 log.info(f"启动时恢复对局 {game.id[:8]}...（有检查点，续跑）")

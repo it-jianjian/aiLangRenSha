@@ -12,7 +12,21 @@ from langchain_core.tools import tool
 
 
 def _query_db(db_path: str, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    """同步查询 SQLite，返回字典列表"""
+    """只读查询：按 database_url 自动选后端，返回字典列表。
+
+    - SQLite：直连 db_path 文件（保持原行为；测试用临时库友好）
+    - MySQL：复用 agent_graph 的带连接池同步引擎（db_path 无意义，忽略）
+    工具 SQL 统一用 ? 占位符；MySQL 分支按驱动 paramstyle 转为 %s。
+    """
+    from app.config import get_settings
+
+    if get_settings().database_url.startswith("mysql"):
+        return _query_mysql(sql, params)
+    return _query_sqlite(db_path, sql, params)
+
+
+def _query_sqlite(db_path: str, sql: str, params: tuple) -> list[dict[str, Any]]:
+    """SQLite 只读查询（直连文件，逐次开关，与改造前一致）。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -20,6 +34,19 @@ def _query_db(db_path: str, sql: str, params: tuple = ()) -> list[dict[str, Any]
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def _query_mysql(sql: str, params: tuple) -> list[dict[str, Any]]:
+    """MySQL 只读查询：复用带池同步引擎 + exec_driver_sql（驱动原生占位符）。"""
+    from app.graphs.agent_graph import _get_sync_engine
+
+    engine = _get_sync_engine()
+    # 工具 SQL 用 ? 占位；pymysql 为 pyformat(%s)，按方言 paramstyle 转换
+    if engine.dialect.paramstyle in ("pyformat", "format"):
+        sql = sql.replace("?", "%s")
+    with engine.connect() as conn:
+        result = conn.exec_driver_sql(sql, params)
+        return [dict(row._mapping) for row in result]
 
 
 def _isolate_vote_result(result: dict, seat_number: int, role: str) -> dict:
@@ -51,7 +78,7 @@ def query_vote_history(
 
     Args:
         game_id: 对局 ID
-        db_path: SQLite 数据库路径
+        db_path: SQLite 数据库路径（MySQL 后端下忽略）
         seat_number: 当前查询者座位号
         role: 当前查询者角色
         round_number: 可选，指定轮次
@@ -92,7 +119,7 @@ def query_speech(
 
     Args:
         game_id: 对局 ID
-        db_path: SQLite 数据库路径
+        db_path: SQLite 数据库路径（MySQL 后端下忽略）
         seat_number: 当前查询者座位号
         role: 当前查询者角色
         round_number: 可选，指定轮次
@@ -135,7 +162,7 @@ def query_death_history(
 
     Args:
         game_id: 对局 ID
-        db_path: SQLite 数据库路径
+        db_path: SQLite 数据库路径（MySQL 后端下忽略）
         seat_number: 当前查询者座位号
         role: 当前查询者角色
 
