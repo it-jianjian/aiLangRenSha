@@ -56,7 +56,11 @@ async def get_replay(
     # ─── 查询所有事件（按时间和 ID 稳定排序） ───
     events_result = await db.execute(
         select(GameEvent)
-        .where(GameEvent.game_id == game_id)
+        .where(
+            GameEvent.game_id == game_id,
+            # FR-3 隔离红线：狼队协商内容绝不进对外 replay API
+            GameEvent.event_type != "werewolf_negotiation",
+        )
         .order_by(GameEvent.created_at, GameEvent.id)         # (created_at, id) 稳定排序
     )
     events = events_result.scalars().all()

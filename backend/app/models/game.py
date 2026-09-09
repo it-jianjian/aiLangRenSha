@@ -343,6 +343,9 @@ class AgentLog(Base):
     prompt_tokens = Column(Integer, nullable=True, comment="LLM 请求消耗的 prompt token 数")
     completion_tokens = Column(Integer, nullable=True, comment="LLM 请求消耗的 completion token 数")
     model_name = Column(String(64), nullable=True, comment="实际使用的模型名称")
+    deliberation_round = Column(Integer, nullable=True, comment="狼队协商轮次: 1=首表态 2=修订/坚持; 非协商为 NULL")
+    critique_result = Column(Text, nullable=True, comment="发言审稿单摘要 JSON: {risk_level, issue_types, fix_hint}; 非批评为 NULL")
+    revised = Column(Boolean, nullable=True, comment="该发言是否经 revise 修订; 非批评为 NULL")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     game = relationship("Game", back_populates="agent_logs")

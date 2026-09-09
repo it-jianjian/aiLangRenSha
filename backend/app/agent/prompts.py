@@ -411,3 +411,101 @@ def _format_game_context(context: dict[str, Any]) -> str:
             parts.append(f"已淘汰: {', '.join(dead_info)}")
 
     return "\n".join(parts) if parts else "暂无额外信息"
+
+
+# ================================================================
+# 需求二：发言批评-修订（Speech Critique Loop）Prompt
+# ================================================================
+
+def build_critique_prompt(
+    role: str,
+    seat_number: int,
+    draft: str,
+    own_history_text: str,
+    companions: list[int] | None = None,
+) -> list[BaseMessage]:
+    """构建“审稿人”批评 Prompt（独立 system prompt，走小模型）。
+
+    审稿人在与 Agent 本人相同的隔离上下文内运行，可见真实身份（用于判断“身份泄露”），
+    但其产物（评审单）仅供内部修订决策与 AgentLog 埋点，绝不进任何对外推送（P0 隔离）。
+
+    批评维度固定四类（FR-1），写死在 system prompt：
+      ① identity_leak      身份泄露：叙述视角超出所扮演身份应有的信息
+      ② self_contradiction 自相矛盾：与自己历史发言冲突且无解释
+      ③ rule_violation     违反发言规则：攻击已出局玩家等
+      ④ weak_argument      论证失效：指控无事实引用
+
+    返回: [SystemMessage, HumanMessage]，要求只输出评审单 JSON。
+    """
+    system_text = (
+        "你是狼人杀发言审稿人。你的唯一职责是审查一名玩家即将发表的发言草稿，"
+        "找出会被真人识破的破绽。你只按固定四类问题审查，不评价文采、不提措辞之外的建议。\n\n"
+        "四类问题（type 只能取以下之一）：\n"
+        "1. identity_leak（身份泄露）：叙述视角超出了所扮演身份应有的信息。"
+        "例如好人说出了只有狼人才知道的内部判断（“他不像狼”这种上帝视角），或狼人暴露了同伴视角。\n"
+        "2. self_contradiction（自相矛盾）：与本人历史发言冲突且未作解释"
+        "（如上一轮咬定某人是狼、这一轮无依据地保他）。\n"
+        "3. rule_violation（违反发言规则）：攻击/指认已出局玩家、复述系统未公布的信息，或明显违反发言常识。\n"
+        "4. weak_argument（论证失效）：给出指控却无任何事实引用（票型/发言/死亡），纯情绪结论。\n\n"
+        "risk_level 取值规则：\n"
+        "- high：存在 identity_leak，或多处严重破绽，几乎必然被识破\n"
+        "- medium：存在 self_contradiction / rule_violation / weak_argument 中至少一处明确破绽\n"
+        "- none：无上述问题（宁可漏判，不可臆造问题）\n\n"
+        "只输出如下 JSON，不要任何额外文字：\n"
+        '{"risk_level": "high|medium|none", '
+        '"issues": [{"type": "identity_leak|self_contradiction|rule_violation|weak_argument", '
+        '"quote": "草稿中的原文片段", "why": "为何是问题"}], '
+        '"fix_hint": "一句话修改方向"}'
+    )
+
+    identity_line = f"被审查玩家：{seat_number}号，真实身份是{_role_name_cn(role)}。"
+    if role == "werewolf" and companions:
+        identity_line += f"其狼人同伴为 {companions}号（此为玩家真实身份，仅用于判断是否泄露，不得写入发言）。"
+
+    human_text = (
+        f"{identity_line}\n\n"
+        f"【该玩家本人过往发言（用于判断自相矛盾）】\n{own_history_text or '（暂无历史发言）'}\n\n"
+        f"【待审查的发言草稿】\n{draft}\n\n"
+        f"请输出评审单 JSON。"
+    )
+
+    return [
+        SystemMessage(content=system_text),
+        HumanMessage(content=human_text),
+    ]
+
+
+def build_revise_messages(
+    role: str,
+    seat_number: int,
+    filtered: dict[str, Any],
+    draft: str,
+    review: dict[str, Any],
+) -> list[BaseMessage]:
+    """构建“本我”修订 Prompt：复用草稿的发言上下文，追加审稿意见要求修订。
+
+    修订由本我（大模型）执行，仅一次，修订稿不再过 critique（FR-3）。
+    """
+    messages = list(build_agent_prompt(role, seat_number, "speech", filtered))
+
+    issues = review.get("issues") or []
+    if issues:
+        issue_lines = [
+            f"- [{it.get('type', '?')}] 原文\"{it.get('quote', '')}\"：{it.get('why', '')}"
+            for it in issues
+        ]
+        issues_text = "\n".join(issue_lines)
+    else:
+        issues_text = "（审稿人未列出具体条目）"
+
+    revise_text = (
+        f"【发言审稿意见】\n"
+        f"你刚才的发言草稿：\n{draft}\n\n"
+        f"审稿人判定风险等级：{review.get('risk_level', 'none')}\n"
+        f"发现的问题：\n{issues_text}\n"
+        f"修改方向：{review.get('fix_hint') or '（无）'}\n\n"
+        f"请据此修订你的发言，消除上述破绽，保持你原本的身份立场与意图。"
+        f"只输出修订后的发言正文，不要输出任何解释、前缀或 JSON。"
+    )
+    messages.append(HumanMessage(content=revise_text))
+    return messages

@@ -42,6 +42,8 @@ interface GameStoreState {
     allowedTargetSeats?: number[]
     lastTarget?: number | null
     canSkip?: boolean
+    // 混合模式狼队协商：AI 同伴的刀书（仅人类狼人决策时可见，来自 human_action_prompt.extra）
+    teammateSuggestion?: { seat: number; target: number; reason: string } | null
   } | null
 
   // ─── 阶段 2 流式发言 ───

@@ -119,6 +119,7 @@ export type WSMessageType =
   | 'phase_change'
   | 'night_action_prompt'
   | 'night_result'
+  | 'werewolf_negotiation'
   | 'death_announce'
   | 'last_words'
   | 'speech'

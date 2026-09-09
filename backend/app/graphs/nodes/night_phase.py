@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 
+from app.agent.decision_parser import validate_decision
 from app.config import get_settings
 from app.graphs.event_bus import (
     get_alive_by_role,
@@ -31,6 +32,7 @@ from app.graphs.nodes.agent_nodes import (
     call_agent_async,
     call_agent_guard,
     call_agent_hunter_shoot,
+    call_agent_kill_proposal,
     call_agent_werewolf_kill,
     call_agent_witch,
 )
@@ -304,7 +306,27 @@ async def night_parallel_actions_node(state: GameFlowState) -> dict:
 
 
 async def _do_werewolf(state, alive_werewolves, alive_non_werewolf_seats) -> dict:
-    """狼人击杀行动（可被 gather 并行调用）"""
+    """狼人击杀行动分派器（可被 gather 并行调用）。
+
+    - 关闭协商（默认）或非双狼 → 走原样抽出的 legacy 分支，行为与改造前字节级一致（验收2）
+    - 开启协商且恰好双狼 → 走 _do_werewolf_deliberate；协商异常 → 退回 legacy(fallback=True)（FR-4）
+    """
+    settings = get_settings()
+    if not settings.wolf_deliberation_enabled or len(alive_werewolves) != 2:
+        return await _do_werewolf_legacy(state, alive_werewolves, alive_non_werewolf_seats)
+    try:
+        return await _do_werewolf_deliberate(state, alive_werewolves, alive_non_werewolf_seats)
+    except Exception as e:
+        logger.warning(f"[Night] 狼队协商异常，退回盲投仲裁: {e}")
+        return await _do_werewolf_legacy(state, alive_werewolves, alive_non_werewolf_seats, fallback=True)
+
+
+async def _do_werewolf_legacy(state, alive_werewolves, alive_non_werewolf_seats, fallback=False) -> dict:
+    """狼人击杀行动（改造前逻辑原样抽出；关闭协商时的默认路径）。
+
+    fallback=True 表示由协商异常降级而来，日志追加 [deliberation_fallback] 标记（FR-4/验收4）；
+    fallback=False 时与改造前逐字节一致。
+    """
     choices = {}
 
     if len(alive_werewolves) == 1:
@@ -364,18 +386,165 @@ async def _do_werewolf(state, alive_werewolves, alive_non_werewolf_seats) -> dic
     target_name = next(
         (p["player_name"] for p in state["players"] if p["seat_number"] == target), "?"
     )
-    logger.info(f"[Night] 狼人选择击杀 {target}号({target_name})，协商方式: {agreement}")
+    marker = " [deliberation_fallback]" if fallback else ""
+    logger.info(f"[Night] 狼人选择击杀 {target}号({target_name})，协商方式: {agreement}{marker}")
 
     return {"night_kill_target": target, "werewolf_agreement": agreement}
 
 
-async def _human_wolf_choice(state, wolf, targets):
-    """人类狼人提交击杀目标"""
-    action = await human_bridge.wait_for_action(
-        state["game_id"], "kill",
-        {"seat_number": wolf["seat_number"], "player_name": wolf["player_name"],
-         "role": wolf["role"], "phase": "night", "allowed_target_seats": targets},
+async def _do_werewolf_deliberate(state, alive_werewolves, alive_non_werewolf_seats) -> dict:
+    """狼队协商（需求一 FR-1/FR-2）：一轮亮牌讨论 + 再表态 + 仲裁兜底。
+
+    仅在 wolf_deliberation_enabled=True 且恰好 2 名存活狼人时进入。收尾与 legacy 完全一致
+    （night_kill 事件 + {night_kill_target, werewolf_agreement}），下游女巫/结算零改动。
+    """
+    targets = alive_non_werewolf_seats
+    ai_wolves = [w for w in alive_werewolves if w["player_type"] != "human"]
+    human_wolves = [w for w in alive_werewolves if w["player_type"] == "human"]
+
+    # ─── 双人类狼：沿用现状双提交 + human_priority，不加协商流程（FR-2） ───
+    if not ai_wolves:
+        return await _do_werewolf_legacy(state, alive_werewolves, alive_non_werewolf_seats)
+
+    # ─── AI + human：AI 先表态 → 私密推给人类 → 人类最终决策（FR-2） ───
+    if human_wolves:
+        ai_prop = await _ai_proposal(state, ai_wolves[0], targets, deliberation_round=1)
+        await _record_negotiation(state, stage=1, proposals=[ai_prop])
+        human_seat, human_target = await _human_wolf_choice(
+            state, human_wolves[0], targets,
+            extra={"teammate_suggestion": {
+                "seat": ai_prop["seat"], "target": ai_prop["target"], "reason": ai_prop["reason"],
+            }},
+        )
+        choices = {ai_prop["seat"]: ai_prop["target"], human_seat: human_target}
+        # 人类即最终决策，不要求二次表态；越界兜底回 AI 目标
+        target = human_target if human_target in targets else ai_prop["target"]
+        return await _finalize_kill(state, target, "human_priority", choices)
+
+    # ─── 双 AI：完整协商矩阵（FR-1） ───
+    wolf_a, wolf_b = ai_wolves[0], ai_wolves[1]
+
+    # 轮 1：各自独立表态（并行）
+    r1 = await asyncio.gather(
+        _ai_proposal(state, wolf_a, targets, deliberation_round=1),
+        _ai_proposal(state, wolf_b, targets, deliberation_round=1),
     )
+    await _record_negotiation(state, stage=1, proposals=list(r1))
+    if r1[0]["target"] == r1[1]["target"]:
+        return await _finalize_kill(
+            state, r1[0]["target"], "unanimous_first",
+            {r1[0]["seat"]: r1[0]["target"], r1[1]["seat"]: r1[1]["target"]},
+        )
+
+    # 轮 2：交换同伴 {target, reason}，各自修订或坚持（并行）
+    r2 = await asyncio.gather(
+        _ai_proposal(state, wolf_a, targets, companion=r1[1], deliberation_round=2),
+        _ai_proposal(state, wolf_b, targets, companion=r1[0], deliberation_round=2),
+    )
+    await _record_negotiation(state, stage=2, proposals=list(r2))
+    choices = {r2[0]["seat"]: r2[0]["target"], r2[1]["seat"]: r2[1]["target"]}
+    if r2[0]["target"] == r2[1]["target"]:
+        return await _finalize_kill(state, r2[0]["target"], "converged_after_debate", choices)
+
+    # 仍分歧 → 现行仲裁 AI 分支（座位号最小者优先，与 legacy stable_ai_priority 一致）
+    return await _finalize_kill(state, choices[sorted(choices)[0]], "stable_ai_priority", choices)
+
+
+async def _ai_proposal(state, wolf, targets, companion=None, deliberation_round=1) -> dict:
+    """单个 AI 狼人协商表态：取回 {target, reason} 并补 validate_decision 校验（FR-1③）。
+
+    非法/超时/解析失败 → 取第一个合法非狼目标兜底并标记 is_fallback。
+    """
+    res = await call_agent_kill_proposal(
+        state, wolf,
+        extra_briefing=_briefing(companion) if companion else None,
+        deliberation_round=deliberation_round,
+    )
+    alive_seats = [p["seat_number"] for p in get_alive_players(state["players"])]
+    valid, _ = validate_decision(
+        decision=res["target"], action_type="kill",
+        alive_seats=alive_seats, own_seat=wolf["seat_number"],
+        werewolf_seats=state.get("werewolf_seats", []),
+        allowed_target_seats=targets,
+    )
+    target = res["target"]
+    is_fallback = bool(res.get("is_fallback"))
+    if not valid:
+        target = targets[0] if targets else None
+        is_fallback = True
+    return {"seat": wolf["seat_number"], "target": target,
+            "reason": res.get("reason", ""), "is_fallback": is_fallback}
+
+
+def _briefing(companion: dict | None) -> str | None:
+    """拼装同伴亮牌文本（仅含同伴 target+reason，不含任何非狼信息，FR-1②）。"""
+    if not companion:
+        return None
+    return (
+        f"【狼队协商·同伴亮牌】你的狼人同伴 {companion['seat']}号 建议击杀 "
+        f"{companion['target']}号，理由：{companion.get('reason') or '（未提供）'}。\n"
+        f"请据此修订或坚持你的击杀目标，并给出你的理由。"
+    )
+
+
+async def _record_negotiation(state, stage: int, proposals: list[dict]) -> None:
+    """记录协商事件（私有）+ 定向投递给狼队座位（FR-3 隔离红线）。
+
+    - phase="night" 且 event_type != "night_phase" → to_public_event 返回 None → 绝不进公共广播
+    - send_to_seat 仅遍历 werewolf_seats → 点对点，非狼座位永不接收
+    """
+    payload = {
+        "stage": stage,
+        "proposals": {
+            str(p["seat"]): {"target": p["target"], "reason": p.get("reason", "")}
+            for p in proposals
+        },
+    }
+    await record_event(
+        state["game_id"], state["current_round"], "night", "werewolf_negotiation",
+        event_data=payload,
+    )
+    try:
+        from app.api.ws_handler import ws_manager
+        for wseat in state.get("werewolf_seats", []):
+            await ws_manager.send_to_seat(state["game_id"], wseat, {
+                "type": "werewolf_negotiation",
+                "data": payload,
+            })
+    except Exception as e:
+        logger.debug(f"[Deliberation] 协商定向投递失败: {e}")
+
+
+async def _finalize_kill(state, target, agreement: str, choices: dict) -> dict:
+    """协商收尾：记录 night_kill 事件 + 返回下游状态（形状与 legacy 一致）。"""
+    await record_event(
+        state["game_id"], state["current_round"], "night", "night_kill",
+        event_data={
+            "target": target,
+            "agreement": agreement,
+            "choices": {str(k): v for k, v in choices.items()},
+        },
+    )
+    target_name = next(
+        (p["player_name"] for p in state["players"] if p["seat_number"] == target), "?"
+    )
+    logger.info(f"[Night] 狼人选择击杀 {target}号({target_name})，协商方式: {agreement}")
+    return {"night_kill_target": target, "werewolf_agreement": agreement}
+
+
+async def _human_wolf_choice(state, wolf, targets, extra=None):
+    """人类狼人提交击杀目标。
+
+    extra: 可选附加信息（混合模式下为队友刀书 teammate_suggestion），透传进
+    human_action_prompt.data.extra；断线重连经 get_pending_action 也能恢复（决策 D5）。
+    """
+    player_info = {
+        "seat_number": wolf["seat_number"], "player_name": wolf["player_name"],
+        "role": wolf["role"], "phase": "night", "allowed_target_seats": targets,
+    }
+    if extra:
+        player_info["extra"] = extra
+    action = await human_bridge.wait_for_action(state["game_id"], "kill", player_info)
     return (wolf["seat_number"], action.get("target_seat"))
 
 

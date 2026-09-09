@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     llm_timeout_simple: int = 15    # kill/verify/save/poison/vote/guard/hunter_shoot
     llm_timeout_speech: int = 45    # speech/last_words
 
+    # ─── 狼队协商（需求一：Werewolf Deliberation） ───────────
+    # 关闭时 _do_werewolf 走原样抽出的 legacy 分支，行为与改造前字节级一致
+    wolf_deliberation_enabled: bool = False   # 总开关，默认关闭
+    wolf_deliberation_max_rounds: int = 1     # 讨论轮次上限（固定 1，即最多表态 2 次）
+
+    # ─── 发言批评-修订（需求二：Speech Critique Loop） ────────
+    # 关闭时 day_speech_node 走原 call_agent_stream，行为与改造前字节级一致
+    speech_critique_enabled: bool = False   # 总开关，默认关闭
+    speech_critique_scope: str = "speech"   # 生效范围（逗号分隔 action_type）；先只开普通发言，不含 last_words/pk
+
     # ─── 多实例 LLM 配置（每个座位独立模型） ────────────────────
     # 座位1~12 各自的模型和温度（共用同一个 API Key + Base URL）
     llm_inst_1_model: str = ""

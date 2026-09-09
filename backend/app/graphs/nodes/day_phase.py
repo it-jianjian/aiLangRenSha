@@ -25,7 +25,7 @@ from app.graphs.event_bus import (
     save_speech,
 )
 from app.graphs.nodes import timed_node
-from app.graphs.nodes.agent_nodes import call_agent_stream
+from app.graphs.nodes.agent_nodes import call_agent_speech_critiqued, call_agent_stream
 from app.graphs.state import GameFlowState
 from app.services.human_action_bridge import human_bridge
 
@@ -213,14 +213,17 @@ async def day_speech_node(state: GameFlowState) -> dict:
             content = action.get("content", "（该玩家选择沉默）")
         else:
             # 阶段 2：流式输出（打字机效果）
-            chunks: list[str] = []
-            def on_chunk(delta: str):
-                chunks.append(delta)
+            def push_chunk(d: str):
+                asyncio.create_task(
+                    _push_speech_chunk(state["game_id"], player["seat_number"], state["current_round"], d)
+                )
 
-            content = await call_agent_stream(
-                state, player, "speech",
-                on_chunk=lambda d: asyncio.create_task(_push_speech_chunk(state["game_id"], player["seat_number"], state["current_round"], d)),
-            )
+            # 需求二：发言批评-修订（方案 A 静默修订），默认关闭；关闭时走原 call_agent_stream（字节级一致）
+            critique_scope = [s.strip() for s in settings.speech_critique_scope.split(",")]
+            if settings.speech_critique_enabled and "speech" in critique_scope:
+                content = await call_agent_speech_critiqued(state, player, "speech", on_chunk=push_chunk)
+            else:
+                content = await call_agent_stream(state, player, "speech", on_chunk=push_chunk)
             if not content or not content.strip():
                 content = f"{player['seat_number']}号选择沉默。"
 

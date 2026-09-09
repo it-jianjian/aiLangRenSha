@@ -112,6 +112,7 @@ export default function GamePage() {
           allowedTargetSeats: action.allowed_target_seats || [],
           lastTarget: action.last_target ?? null,
           canSkip: !!action.can_skip,
+          teammateSuggestion: action.extra?.teammate_suggestion ?? null,
         })
         // 女巫专属：恢复"今晚谁被杀 / 药水是否可用"面板信息
         if (action.action_type === 'save' && action.extra) {
@@ -197,6 +198,8 @@ export default function GamePage() {
             allowedTargetSeats: msg.data.allowed_target_seats || [],
             lastTarget: msg.data.last_target ?? null,
             canSkip: !!msg.data.can_skip,
+            // 混合模式狼队协商：透传 AI 同伴刀书（仅人类狼人 kill 时有值）
+            teammateSuggestion: msg.data.extra?.teammate_suggestion ?? null,
           })
           break
         case 'night_verify':
@@ -222,6 +225,23 @@ export default function GamePage() {
             poison_available: msg.data.poison_available,
           })
           break
+        case 'werewolf_negotiation': {
+          // 狼队私有协商事件：后端仅向狼队座位定向投递（send_to_seat），此处再按身份兜底门控
+          const gs = useGameStore.getState()
+          if (gs.myRole !== 'werewolf') break
+          const proposals = (msg.data?.proposals || {}) as Record<string, { target: number; reason?: string }>
+          const others = Object.entries(proposals).filter(([seat]) => Number(seat) !== gs.mySeat)
+          if (others.length > 0) {
+            const text = others
+              .map(([seat, p]) => `${seat}号建议刀 ${p.target}号${p.reason ? `（${p.reason}）` : ''}`)
+              .join('；')
+            message.info({
+              content: `🐺 狼队协商·第${msg.data?.stage ?? 1}轮 · 队友刀书：${text}`,
+              duration: 8,
+            })
+          }
+          break
+        }
         default:
           break
       }
@@ -643,6 +663,12 @@ export default function GamePage() {
                       </div>
                       {store.actionPrompt.actionType === 'kill' && store.myCompanions.length > 0 && (
                         <div className="action-prompt__companions">🐺 同伴: {store.myCompanions.map(c => `${c}号`).join('、')}（不能击杀同伴）</div>
+                      )}
+                      {store.actionPrompt.actionType === 'kill' && store.actionPrompt.teammateSuggestion && (
+                        <div className="action-prompt__teammate">
+                          📜 队友刀书：{store.actionPrompt.teammateSuggestion.seat}号建议刀 {store.actionPrompt.teammateSuggestion.target}号
+                          {store.actionPrompt.teammateSuggestion.reason ? `（理由：${store.actionPrompt.teammateSuggestion.reason}）` : ''}
+                        </div>
                       )}
                       {store.actionPrompt.allowedTargetSeats && store.actionPrompt.allowedTargetSeats.length > 0 && (
                         <div className="action-prompt__targets">

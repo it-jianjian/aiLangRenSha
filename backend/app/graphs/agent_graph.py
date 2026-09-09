@@ -127,6 +127,8 @@ def _flush_batch(batch: list, AgentLog, Session) -> None:
                     prompt_tokens=item.get("prompt_tokens"),
                     completion_tokens=item.get("completion_tokens"),
                     model_name=item.get("model_name"),
+                    critique_result=item.get("critique_result"),
+                    revised=item.get("revised"),
                 )
                 session.add(log)
             session.commit()
@@ -155,6 +157,8 @@ def _persist_agent_log(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     model_name: str | None = None,
+    critique_result: str | None = None,
+    revised: bool | None = None,
 ) -> None:
     """将 AI 决策审计日志持久化到 agent_logs 表。
 
@@ -176,6 +180,8 @@ def _persist_agent_log(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "model_name": model_name,
+            "critique_result": critique_result,
+            "revised": revised,
         })
     except queue.Full:
         logger.warning("[Agent] AgentLog 队列已满，丢弃本条")

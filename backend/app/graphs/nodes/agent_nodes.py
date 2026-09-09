@@ -14,9 +14,10 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable, Optional
 
-from app.graphs.agent_graph import run_agent
+from app.graphs.agent_graph import _persist_agent_log, run_agent
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,68 @@ async def call_agent_stream(
     return full_text
 
 
+async def call_agent_speech_critiqued(
+    game_state: dict[str, Any],
+    player: dict[str, Any],
+    action_type: str,
+    on_chunk: Callable[[str], None],
+) -> str:
+    """发言批评-修订路径（需求二，方案 A 静默修订）。
+
+    1) 静默生成草稿（on_chunk 传 no-op，草稿不外推）；
+    2) critique →（revise），全异常回退草稿；
+    3) 终稿一次性经 on_chunk 外推（复用现有 speech_chunk 通道，承载终稿而非草稿）；
+    4) 新增一条 speech 的 AgentLog（带 critique_result/revised；真实流式原本不落库，见锚点3）。
+
+    返回终稿文本。关闭开关时 day_speech_node 不调本函数（走原 call_agent_stream）。
+    """
+    from app.agent.speech_critique import critique_and_revise
+
+    seat = player["seat_number"]
+    start = time.monotonic()
+
+    # 1) 静默草稿：on_chunk no-op，草稿不外推（方案 A 核心）
+    draft = await call_agent_stream(game_state, player, action_type, on_chunk=lambda d: None)
+    if not draft or not draft.strip():
+        return draft  # 空草稿走原沉默兜底，不进审稿
+
+    # 2) 批评-修订
+    res = await critique_and_revise(game_state, player, action_type, draft)
+    final = res["final_text"]
+
+    # 3) 终稿一次性外推（前端未接线也无害；承载终稿而非草稿）
+    try:
+        on_chunk(final)
+    except Exception as e:
+        logger.debug(f"[Critique] {seat}号终稿推送失败: {e}")
+
+    # 4) 埋点：新增 speech 的 AgentLog（critique_result/revised）
+    latency_ms = int((time.monotonic() - start) * 1000)
+    try:
+        _persist_agent_log(
+            game_id=game_state.get("game_id", ""),
+            round_number=game_state.get("current_round", 0),
+            seat_number=seat,
+            action_type=action_type,
+            filtered_context={},
+            prompt_messages=[],
+            llm_raw_output=draft,
+            parsed_decision={"decision": final},
+            is_fallback=res["is_fallback"],
+            latency_ms=latency_ms,
+            critique_result=res["critique_result"],
+            revised=res["revised"],
+        )
+    except Exception as e:
+        logger.debug(f"[Critique] {seat}号 AgentLog 埋点失败（不影响主链）: {e}")
+
+    logger.info(
+        f"[Critique] {seat}号发言审稿完成: revised={res['revised']} "
+        f"fallback={res['is_fallback']} latency={latency_ms}ms"
+    )
+    return final
+
+
 # ================================================================
 # A1: ReAct Agent 入口（决策类专用）
 # ================================================================
@@ -192,6 +255,7 @@ def _persist_react_log(
     seat_number: int,
     action_type: str,
     result: dict,
+    deliberation_round: int | None = None,
 ) -> None:
     """持久化 ReAct 决策日志 + agent_steps"""
     import threading
@@ -215,6 +279,7 @@ def _persist_react_log(
                     is_fallback=result.get("is_fallback", False),
                     latency_ms=result.get("latency_ms"),
                     model_name=None,  # ReAct 子图内部路由，不在此记录
+                    deliberation_round=deliberation_round,
                 )
                 session.add(log)
                 session.flush()  # 获取 log.id
@@ -233,6 +298,65 @@ def _persist_react_log(
             logger.warning(f"[ReAct] AgentLog 持久化失败（不影响主链）: {e}")
 
     threading.Thread(target=_write, daemon=True).start()
+
+
+async def call_agent_kill_proposal(
+    game_state: dict[str, Any],
+    wolf: dict[str, Any],
+    extra_briefing: str | None = None,
+    deliberation_round: int = 1,
+) -> dict[str, Any]:
+    """狼队协商专用表态入口：取回 {target, reason}，不丢弃 reasoning。
+
+    区别于 call_agent_react（只返回 decision），本函数直接调 run_react_agent
+    拿回完整结果，供 _do_werewolf 交换理由与仲裁使用。
+
+    参数:
+        extra_briefing: 仅第二轮传入，注入同伴亮牌的 {target, reason}（只含同伴消息）
+        deliberation_round: 1=首表态 / 2=修订或坚持，写入 AgentLog 供复盘
+
+    返回:
+        {"target": int|None, "reason": str, "is_fallback": bool}
+
+    说明: action_type 保持 "kill"，沿用 kill 的小模型路由与超时分级（决策 D4）。
+    """
+    from app.agent.react_agent import run_react_agent
+    from app.config import get_settings
+
+    settings = get_settings()
+    seat = wolf["seat_number"]
+    role = getattr(wolf["role"], "value", wolf["role"])
+    db_path = settings.data_dir / "werewolf.db"
+
+    result = await run_react_agent(
+        game_id=game_state.get("game_id", ""),
+        db_path=str(db_path),
+        seat_number=seat,
+        role=role,
+        action_type="kill",
+        game_context=game_state,
+        extra_briefing=extra_briefing,
+    )
+
+    _persist_react_log(
+        game_id=game_state.get("game_id", ""),
+        round_number=game_state.get("current_round", 0),
+        seat_number=seat,
+        action_type="kill",
+        result=result,
+        deliberation_round=deliberation_round,
+    )
+
+    logger.info(
+        f"[Deliberation] {seat}号({role}) 第{deliberation_round}轮表态: "
+        f"target={result.get('decision')} fallback={result.get('is_fallback')}"
+    )
+
+    return {
+        "target": result.get("decision"),
+        "reason": result.get("reasoning", ""),
+        "is_fallback": result.get("is_fallback", False),
+    }
 
 
 # ================================================================

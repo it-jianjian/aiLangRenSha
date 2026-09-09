@@ -70,9 +70,14 @@ def _build_react_system_prompt(action_type: str, seat: int, role: str) -> str:
 
 
 def _build_initial_messages(
-    seat: int, role: str, action_type: str, context: dict
+    seat: int, role: str, action_type: str, context: dict,
+    extra_briefing: str | None = None,
 ) -> list[BaseMessage]:
-    """构建 ReAct 初始消息"""
+    """构建 ReAct 初始消息
+
+    extra_briefing: 狼队协商第二轮注入的同伴亮牌文本（只含同伴 target+reason，
+    不含任何非狼信息）。按调用传入而非写入共享 state，避免双狼 gather 并发时相互覆盖。
+    """
 
     # 复用现有 prompt 构建（但要求 LLM 用工具查询而非依赖全量历史）
     system_text = _build_react_system_prompt(action_type, seat, role)
@@ -90,6 +95,10 @@ def _build_initial_messages(
         "请使用工具查询历史票型、发言和死亡记录来辅助你的决策。\n"
         "先分析局势（Thought），再决定是否调用工具。"
     )
+
+    # 狼队协商：注入同伴亮牌理由，要求据此修订或坚持（FR-1 ②③）
+    if extra_briefing:
+        human_text += f"\n\n{extra_briefing}"
 
     return [
         SystemMessage(content=system_text),
@@ -275,6 +284,7 @@ async def run_react_agent(
     role: str,
     action_type: str,
     game_context: dict,
+    extra_briefing: str | None = None,
     max_iterations: int = 3,
 ) -> dict:
     """运行 ReAct Agent 决策
@@ -290,7 +300,7 @@ async def run_react_agent(
     """
     start_time = time.monotonic()
 
-    messages = _build_initial_messages(seat_number, role, action_type, game_context)
+    messages = _build_initial_messages(seat_number, role, action_type, game_context, extra_briefing)
 
     react_graph = build_react_graph()
     initial_state: ReActState = {
@@ -321,6 +331,9 @@ async def run_react_agent(
         filtered = filter_context(game_context, seat_number, role, action_type)
         msgs = build_agent_prompt(role=role, seat_number=seat_number,
                                   action_type=action_type, game_context=filtered)
+        # 协商兜底路径同样带上同伴亮牌理由，避免降级后语义割裂
+        if extra_briefing:
+            msgs = list(msgs) + [HumanMessage(content=extra_briefing)]
         llm = create_llm(seat_number=seat_number, action_type=action_type)
         try:
             resp = await llm.ainvoke(msgs)

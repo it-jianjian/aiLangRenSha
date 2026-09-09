@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 # 简单决策类型（只需要输出一个数字或布尔值）
-SIMPLE_ACTION_TYPES = {"kill", "verify", "save", "poison", "vote", "guard", "hunter_shoot"}
+# critique: 需求二发言审稿用小模型路由（非游戏决策类型，仅需小模型 + simple 超时）
+SIMPLE_ACTION_TYPES = {"kill", "verify", "save", "poison", "vote", "guard", "hunter_shoot", "critique"}
 # 发言类决策类型（需要生成长文本）
 SPEECH_ACTION_TYPES = {"speech", "last_words"}
 

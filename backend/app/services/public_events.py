@@ -3,7 +3,11 @@
 import json
 from typing import Any
 
-_PRIVATE_EVENT_TYPES = {"night_settle", "night_guard", "hunter_shot", "hunter_revenge"}
+_PRIVATE_EVENT_TYPES = {
+    "night_settle", "night_guard", "hunter_shot", "hunter_revenge",
+    # FR-3: 狼队协商为狼队私有事件（防御性冗余；night 阶段本已被 to_public_event 抑制）
+    "werewolf_negotiation",
+}
 
 
 def to_public_event(event: Any) -> dict[str, Any] | None:
