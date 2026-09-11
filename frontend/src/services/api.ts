@@ -32,6 +32,13 @@ client.interceptors.response.use(
   },
 )
 
+// 请求拦截器：自动携带登录 token（可选登录）
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem('ww-token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
 /**
  * 从 ApiResponse 中提取 data 字段
  * 后端统一返回 { code, message, data } 格式
@@ -117,6 +124,64 @@ export const apiService = {
       target_seat: targetSeat,
       is_pk_vote: isPkVote,
     }, { headers: { 'X-Player-Token': playerToken } })
+    return unwrap(res)
+  },
+
+  /** 获取可选模型列表 + 各座位模型覆盖 */
+  async getSeatModels(gameId: string): Promise<{ available: string[]; player_count: number; seat_models: Record<string, string> }> {
+    const res = await client.get(`/games/${gameId}/models`)
+    return unwrap(res)
+  },
+
+  /** 房主设置各座位对应模型（仅 waiting） */
+  async setSeatModels(gameId: string, seatModels: Record<string, string>, ownerToken: string) {
+    const res = await client.put(`/games/${gameId}/models`, { seat_models: seatModels }, { headers: { 'X-Owner-Token': ownerToken } })
+    return unwrap(res)
+  },
+
+  /** 玩家为自己座位设模型（仅 waiting） */
+  async setMyModel(gameId: string, model: string, playerToken: string) {
+    const res = await client.put(`/games/${gameId}/my_model`, { model }, { headers: { 'X-Player-Token': playerToken } })
+    return unwrap(res)
+  },
+
+  /** 自定义模型池 */
+  async listModelPool(): Promise<{ items: { name: string; base_url: string; temperature: number | null; api_key_masked: string }[] }> {
+    const res = await client.get('/models')
+    return unwrap(res)
+  },
+  async upsertModelPool(model: { name: string; api_key: string; base_url: string; temperature?: number | null }) {
+    const res = await client.post('/models', model)
+    return unwrap(res)
+  },
+  async deleteModelPool(name: string) {
+    const res = await client.delete(`/models/${encodeURIComponent(name)}`)
+    return unwrap(res)
+  },
+
+  /** 账号（可选登录） */
+  async register(req: { username: string; password: string; nickname?: string; email?: string }): Promise<{ token: string; user: any }> {
+    const res = await client.post('/auth/register', req)
+    return unwrap(res)
+  },
+  async login(req: { username: string; password: string }): Promise<{ token: string; user: any }> {
+    const res = await client.post('/auth/login', req)
+    return unwrap(res)
+  },
+  async me(): Promise<{ user: any }> {
+    const res = await client.get('/auth/me')
+    return unwrap(res)
+  },
+  async updateMe(req: { nickname?: string; avatar?: string; bio?: string; email?: string }): Promise<{ user: any }> {
+    const res = await client.put('/auth/me', req)
+    return unwrap(res)
+  },
+  async myGames(): Promise<{ items: any[] }> {
+    const res = await client.get('/auth/me/games')
+    return unwrap(res)
+  },
+  async myStats(): Promise<any> {
+    const res = await client.get('/auth/me/stats')
     return unwrap(res)
   },
 

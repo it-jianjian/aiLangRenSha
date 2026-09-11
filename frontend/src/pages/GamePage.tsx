@@ -14,7 +14,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Button, Input, Radio, InputNumber, Spin, message, Divider, Tag } from 'antd'
+import { Button, Input, Radio, InputNumber, Spin, message, Divider, Tag, Modal, Select } from 'antd'
 import { wsService } from '../services/ws'
 import { apiService } from '../services/api'
 import { mergePublicEvents } from '../services/eventStream'
@@ -22,6 +22,7 @@ import { useGameStore } from '../stores/gameStore'
 import type { WSMessage, GameDetail, Roster, PlayerInfo } from '../types'
 import IdentityPanel from '../components/game/IdentityPanel'
 import PlayerTable from '../components/game/PlayerTable'
+import TimelinePanel from '../components/game/TimelinePanel'
 import CurrentSpeechPanel from '../components/game/CurrentSpeechPanel'
 import EventLogPanel from '../components/game/EventLogPanel'
 import './GamePage.css'
@@ -35,6 +36,7 @@ interface LogEntry {
   type: string
   text: string
   phase: string
+  round?: number
 }
 
 // ─── 辅助函数 ───
@@ -72,6 +74,18 @@ export default function GamePage() {
   // ─── 等待态阵容编辑状态 ───
   const [rosterConfig, setRosterConfig] = useState<{ playerCount: 6 | 12; rosterType: 'official' | 'custom'; roster: Roster; errors: string[] } | null>(null)
   const [rosterSaving, setRosterSaving] = useState(false)
+  const [roster, setRoster] = useState<Roster | null>(null)
+  const [seatModels, setSeatModels] = useState<Record<number, string>>({})
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [modelModalOpen, setModelModalOpen] = useState(false)
+  const [draftSeatModels, setDraftSeatModels] = useState<Record<number, string>>({})
+  const [modelSaving, setModelSaving] = useState(false)
+  const [myModelOpen, setMyModelOpen] = useState(false)
+  const [myModelDraft, setMyModelDraft] = useState('')
+  const [marks, setMarks] = useState<Record<number, { mark: 'suspect' | 'trust' | ''; note: string }>>({})
+  const [markSeat, setMarkSeat] = useState<number | null>(null)
+  const [markDraft, setMarkDraft] = useState<{ mark: 'suspect' | 'trust' | ''; note: string }>({ mark: '', note: '' })
+  const [myTurnFlash, setMyTurnFlash] = useState(false)
   // 暴露 applyMessage 供 handleStart 使用
   const applyMessageRef = useRef<(msg: WSMessage) => void>(() => {})
 
@@ -84,7 +98,12 @@ export default function GamePage() {
     const applyMessage = (msg: WSMessage) => {
       store.addMessage(msg)
       const logEntry = wsMessageToLog(msg)
-      if (logEntry) setEventLog(prev => mergePublicEvents(prev, [logEntry]))
+      if (logEntry) {
+        logEntry.round = msg.data?.round ?? store.currentRound
+        setEventLog(prev => mergePublicEvents(prev, [logEntry]))
+      }
+      // 轮到我提醒：浏览器通知 + 提示音 + 顶栏闪烁
+      if (msg.type === 'human_action_prompt' && msg.data?.seat === store.mySeat) notifyMyTurn()
       if (msg.type === 'phase_change') store.setPhase(msg.data.round, msg.data.phase)
       if (msg.type === 'night_phase') store.setPhase(msg.data.round, 'night')
       if (['speech', 'pk_speech', 'last_words', 'eliminate'].includes(msg.type)) {
@@ -130,6 +149,7 @@ export default function GamePage() {
     apiService.getGame(gameId).then((detail: GameDetail) => {
       store.setGame(detail.game_id, detail.mode, detail.model_name)
       store.setPlayers(detail.players)
+      setRoster(detail.roster || null)
       // 初始化阵容编辑状态
       const ownerToken = sessionStorage.getItem(`game-owner-token:${gameId}`)
       if (ownerToken && detail.status === 'waiting' && !detail.roster_locked) {
@@ -285,6 +305,7 @@ export default function GamePage() {
       const detail = await apiService.getGame(gameId)
       store.setGame(detail.game_id, detail.mode, detail.model_name)
       store.setPlayers(detail.players)
+      setRoster(detail.roster || null)
       if (detail.status === 'playing') {
         setStarted(true)
       }
@@ -303,6 +324,133 @@ export default function GamePage() {
     hunter: count === 12 ? 1 : 0,
     guard: count === 12 ? 1 : 0,
   })
+
+  const humanSeat = store.players.find(p => p.player_type === 'human')?.seat_number ?? null
+
+  const openMyModel = async () => {
+    if (!gameId) return
+    try {
+      const data = await apiService.getSeatModels(gameId)
+      setAvailableModels(data.available || [])
+      setMyModelDraft((data.seat_models || {})[String(humanSeat)] || '')
+      setMyModelOpen(true)
+    } catch {
+      message.error('获取模型列表失败')
+    }
+  }
+
+  const saveMyModel = async () => {
+    if (!gameId || humanSeat == null) return
+    const playerToken = sessionStorage.getItem(`game-player-token:${gameId}`) || ''
+    try {
+      setModelSaving(true)
+      await apiService.setMyModel(gameId, myModelDraft, playerToken)
+      setSeatModels({ ...seatModels, [humanSeat]: myModelDraft })
+      message.success('我的模型已保存')
+      setMyModelOpen(false)
+    } catch {
+      message.error('保存失败（仅对局未开始时可改）')
+    } finally {
+      setModelSaving(false)
+    }
+  }
+
+  const notifyMyTurn = () => {
+    setMyTurnFlash(true)
+    setTimeout(() => setMyTurnFlash(false), 4000)
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('轮到你了', { body: '狼人杀：轮到你行动了' })
+      } else if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission()
+      }
+    } catch { /* ignore */ }
+    try {
+      const AC = window.AudioContext || (window as any).webkitAudioContext
+      if (AC) {
+        const ctx = new AC()
+        const o = ctx.createOscillator(); const g = ctx.createGain()
+        o.connect(g); g.connect(ctx.destination)
+        o.frequency.value = 880; g.gain.value = 0.08
+        o.start(); setTimeout(() => { o.stop(); ctx.close() }, 300)
+      }
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => {
+    if (!gameId) return
+    try {
+      const raw = localStorage.getItem(`ww-marks-${gameId}`)
+      if (raw) setMarks(JSON.parse(raw))
+    } catch { /* ignore */ }
+  }, [gameId])
+
+  const persistMarks = (next: Record<number, { mark: 'suspect' | 'trust' | ''; note: string }>) => {
+    setMarks(next)
+    if (gameId) localStorage.setItem(`ww-marks-${gameId}`, JSON.stringify(next))
+  }
+  const openMark = (seat: number) => {
+    setMarkSeat(seat)
+    setMarkDraft(marks[seat] || { mark: '', note: '' })
+  }
+  const saveMark = () => {
+    if (markSeat == null) return
+    persistMarks({ ...marks, [markSeat]: markDraft })
+    setMarkSeat(null)
+  }
+
+  const rematch = async () => {
+    if (!gameId) return
+    try {
+      const created = await apiService.createGame({
+        mode: (store.gameMode as 'pure_ai' | 'mixed') || 'pure_ai',
+        player_count: (players.length === 12 ? 12 : 6) as 6 | 12,
+        roster_type: 'custom',
+        roster: roster || undefined,
+        player_name: store.gameMode === 'mixed' ? '我' : undefined,
+      })
+      sessionStorage.setItem(`game-owner-token:${created.game_id}`, created.owner_token)
+      if (created.player_token) sessionStorage.setItem(`game-player-token:${created.game_id}`, created.player_token)
+      message.success('已用上局配置开新局')
+      navigate(`/game/${created.game_id}`)
+    } catch {
+      message.error('重开失败')
+    }
+  }
+
+  const openModelModal = async () => {
+    if (!gameId) return
+    try {
+      const data = await apiService.getSeatModels(gameId)
+      setAvailableModels(data.available || [])
+      const cur: Record<number, string> = {}
+      Object.entries(data.seat_models || {}).forEach(([k, v]) => { cur[Number(k)] = v })
+      setDraftSeatModels(cur)
+      setModelModalOpen(true)
+    } catch {
+      message.error('获取模型列表失败')
+    }
+  }
+
+  const saveSeatModels = async () => {
+    if (!gameId) return
+    const ownerToken = sessionStorage.getItem(`game-owner-token:${gameId}`) || ''
+    try {
+      setModelSaving(true)
+      const payload: Record<string, string> = {}
+      Object.entries(draftSeatModels).forEach(([k, v]) => { if (v) payload[k] = v })
+      await apiService.setSeatModels(gameId, payload, ownerToken)
+      const cur: Record<number, string> = {}
+      Object.entries(payload).forEach(([k, v]) => { cur[Number(k)] = v })
+      setSeatModels(cur)
+      message.success('模型配置已保存')
+      setModelModalOpen(false)
+    } catch {
+      message.error('保存失败（仅房主且对局未开始时可改）')
+    } finally {
+      setModelSaving(false)
+    }
+  }
 
   const computeRosterErrors = (roster: Roster, playerCount: number): string[] => {
     const errors: string[] = []
@@ -500,36 +648,66 @@ export default function GamePage() {
 
   return (
     <div className={themeClass}>
-      <div className="game-page__inner">
-        {/* ─── 顶部状态栏 ─── */}
-        <header className="game-header">
-          <div className="game-header__left">
-            <span className="game-header__phase-icon">{isNight ? '🌙' : '☀️'}</span>
-            <span className="game-header__phase-text">{isNight ? '夜晚' : '白天'}</span>
-            {currentPhase && <span className="game-header__round">第 {store.currentRound} 轮</span>}
+      <div className="game-shell">
+        {/* ─── 顶栏 ─── */}
+        <header className={`gp-topbar ${myTurnFlash ? 'gp-topbar--flash' : ''}`}>
+          <div>
+            <div className="gp-topbar__title display">狼人杀</div>
+            <small className="muted">第 {store.currentRound || 1} 天 · {isNight ? '夜晚' : '白天'}</small>
           </div>
-          <div className="game-header__right">
+          <div className="gp-topbar__right">
+            <span className="tag-pill">存活 {aliveCount}/{players.length}</span>
+            <span className="tag-pill">{store.gameMode === 'mixed' ? '人机混合' : '纯AI'}</span>
             {isGameOver ? (
-              <Tag color={store.winner === 'werewolf' ? 'red' : 'green'} style={{ fontSize: 14, padding: '2px 10px' }}>
+              <Tag color={store.winner === 'werewolf' ? 'red' : 'green'}>
                 🏆 {store.winner === 'werewolf' ? '狼人胜' : '好人胜'}
               </Tag>
             ) : started ? (
-              <>
-                <span className="game-header__status-dot" />
-                <span className="game-header__status-text">游戏中</span>
-              </>
+              <span className="tag-pill tag-pill--live"><i />游戏中</span>
             ) : (
-              <span className="game-header__status-text">等待开始</span>
+              <span className="tag-pill">等待开始</span>
             )}
-            <span className="game-header__alive-count">存活 {aliveCount} / {players.length}</span>
-            <span className="game-header__mode-badge">{store.gameMode === 'mixed' ? '人机混合' : '纯AI'}</span>
           </div>
         </header>
 
-        {/* ─── 三栏主布局 ─── */}
-        <div className="game-layout">
-          {/* 左侧：我的身份 */}
-          <div className="game-layout__left">
+        {/* ─── 角色计数 ─── */}
+        {roster && (
+          <div className="gp-status">
+            <span className="tag-pill">狼人 {roster.werewolf}</span>
+            <span className="tag-pill">神职 {(roster.seer || 0) + (roster.witch || 0) + (roster.hunter || 0) + (roster.guard || 0)}</span>
+            <span className="tag-pill">平民 {roster.villager}</span>
+          </div>
+        )}
+
+        {/* ─── 阶段 ─── */}
+        <div className="gp-phase">
+          <h2 className="display">{isNight ? '夜晚行动' : store.actionPrompt?.actionType === 'vote' ? '白天投票' : '白天发言阶段'}</h2>
+          <div className="gp-phase__orb">{isNight ? '🌙' : '☀️'}</div>
+          <small className="muted">{isNight ? '黑夜降临，各自行动' : '倾听他人发言，找出隐藏在黑暗中的狼人'}</small>
+        </div>
+
+        {/* ─── 玩家列表（双列）─── */}
+        <PlayerTable
+          players={players}
+          mySeat={store.mySeat}
+          myRole={store.myRole}
+          myCompanions={store.myCompanions}
+          currentPhase={currentPhase}
+          currentRound={store.currentRound}
+          isNight={isNight}
+          selectableSeats={selectableSeats}
+          onSeatClick={handleActionSelect}
+          speakingSeat={speakingSeat}
+          gameMode={store.gameMode}
+          modelName={store.modelName}
+          seatModels={seatModels}
+          marks={marks}
+          onMark={openMark}
+        />
+
+        {/* ─── 身份 + 当前发言 ─── */}
+        <div className="gp-role-row">
+          <div className="gp-role-slot">
             {store.myRole ? (
               <IdentityPanel
                 myRole={store.myRole}
@@ -562,36 +740,13 @@ export default function GamePage() {
               </div>
             )}
           </div>
-
-          {/* 中间：圆桌玩家区域 */}
-          <div className="game-layout__center">
-            <div className="gp-panel">
-              <PlayerTable
-                players={players}
-                mySeat={store.mySeat}
-                myRole={store.myRole}
-                myCompanions={store.myCompanions}
-                currentPhase={currentPhase}
-                currentRound={store.currentRound}
-                isNight={isNight}
-                selectableSeats={selectableSeats}
-                onSeatClick={handleActionSelect}
-                speakingSeat={speakingSeat}
-                gameMode={store.gameMode}
-                modelName={store.modelName}
-              />
-            </div>
+          <div className="gp-speech-slot">
+            <CurrentSpeechPanel speeches={speeches} eventLog={eventLog} />
           </div>
+        </div>
 
-          {/* 右侧：当前发言 + 操作面板 */}
-          <div className="game-layout__right">
-            {/* 当前发言 */}
-            <div className="gp-panel">
-              <CurrentSpeechPanel speeches={speeches} eventLog={eventLog} />
-            </div>
-
-            {/* 操作面板 */}
-            <div className="gp-panel action-panel">
+          {/* 操作区 */}
+          <div className="gp-action panel">
               <div className="gp-panel__header">
                 <span>🎮</span>
                 <span>操作面板</span>
@@ -635,16 +790,23 @@ export default function GamePage() {
                         <Button size="small" onClick={handleResetOfficial} loading={rosterSaving}>恢复官方阵容</Button>
                         <Button size="small" onClick={handleSaveRoster} loading={rosterSaving} disabled={rosterConfig.errors.length > 0}>保存阵容</Button>
                       </div>
+                      <Button block onClick={openModelModal}>🎛 配置玩家模型</Button>
                       <Button type="primary" block size="large" onClick={handleStart} disabled={rosterConfig.errors.length > 0}>开始对局</Button>
                     </div>
                   ) : (
-                    <Button type="primary" block size="large" onClick={handleStart}>开始对局</Button>
+                    <>
+                      <Button type="primary" block size="large" onClick={handleStart}>开始对局</Button>
+                      {store.gameMode === 'mixed' && humanSeat && (
+                        <Button block onClick={openMyModel}>🎯 我的模型</Button>
+                      )}
+                    </>
                   )
                 ) : isGameOver ? (
                   <div className="game-over-panel">
                     <Button type="primary" block size="large" onClick={() => navigate(`/replay/${gameId!}`)}>
                       📺 查看回放
                     </Button>
+                    <Button block onClick={rematch}>🔁 重开同配置</Button>
                     <Button block onClick={() => navigate('/')}>返回大厅</Button>
                   </div>
                 ) : store.actionPrompt ? (
@@ -762,11 +924,75 @@ export default function GamePage() {
                 )}
               </div>
             </div>
-          </div>
-        </div>
 
         {/* ─── 底部事件日志 ─── */}
+        <TimelinePanel eventLog={eventLog} />
         <EventLogPanel eventLog={eventLog} logEndRef={logEndRef} getLogEntryClass={getLogEntryClass} />
+
+        {/* ─── 配置玩家模型弹窗 ─── */}
+        <Modal
+          title="配置玩家模型"
+          open={modelModalOpen}
+          onCancel={() => setModelModalOpen(false)}
+          confirmLoading={modelSaving}
+          onOk={saveSeatModels}
+          okText="保存"
+          cancelText="取消"
+        >
+          <p className="muted" style={{ fontSize: 12 }}>为每个座位指定使用的模型；留空则按默认路由。</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {players.map(p => (
+              <div key={p.seat_number} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 84, fontSize: 13, flexShrink: 0 }}>{p.seat_number}. {p.player_name}</span>
+                <Select
+                  style={{ flex: 1 }}
+                  allowClear
+                  placeholder="默认"
+                  value={draftSeatModels[p.seat_number] || undefined}
+                  onChange={(v) => setDraftSeatModels({ ...draftSeatModels, [p.seat_number]: v || '' })}
+                  options={availableModels.map(m => ({ label: m, value: m }))}
+                />
+              </div>
+            ))}
+          </div>
+        </Modal>
+
+        {/* ─── 我的模型弹窗（玩家自配自己席位）─── */}
+        <Modal
+          title="我的模型"
+          open={myModelOpen}
+          onCancel={() => setMyModelOpen(false)}
+          confirmLoading={modelSaving}
+          onOk={saveMyModel}
+          okText="保存"
+          cancelText="取消"
+        >
+          <p className="muted" style={{ fontSize: 12 }}>为你自己所在座位（{humanSeat}号）指定模型；留空=默认。</p>
+          <Select
+            style={{ width: '100%' }}
+            allowClear
+            placeholder="默认"
+            value={myModelDraft || undefined}
+            onChange={(v) => setMyModelDraft(v || '')}
+            options={availableModels.map(m => ({ label: m, value: m }))}
+          />
+        </Modal>
+
+        {/* ─── 标记/笔记弹窗（仅本地）─── */}
+        <Modal
+          title={markSeat != null ? `${markSeat}号 标记/笔记` : ''}
+          open={markSeat != null}
+          onCancel={() => setMarkSeat(null)}
+          onOk={saveMark}
+          okText="保存"
+          cancelText="取消"
+        >
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <Button size="small" danger={markDraft.mark === 'suspect'} type={markDraft.mark === 'suspect' ? 'primary' : 'default'} onClick={() => setMarkDraft({ ...markDraft, mark: markDraft.mark === 'suspect' ? '' : 'suspect' })}>怀疑</Button>
+            <Button size="small" type={markDraft.mark === 'trust' ? 'primary' : 'default'} onClick={() => setMarkDraft({ ...markDraft, mark: markDraft.mark === 'trust' ? '' : 'trust' })}>保</Button>
+          </div>
+          <Input.TextArea rows={3} placeholder="记点什么…（仅存本地）" value={markDraft.note} onChange={e => setMarkDraft({ ...markDraft, note: e.target.value })} />
+        </Modal>
       </div>
     </div>
   )

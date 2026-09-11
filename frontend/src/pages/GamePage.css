@@ -1,743 +1,199 @@
 /* ================================================================
-   GamePage.css — 狼人杀对局页面样式 v4
-   暗夜竞技场风格：暗黑哥特 + 赛博光效
-   参考网易狼人杀 / Town of Salem 2 视觉语言
+   GamePage.css — 参考稿「游戏局内」单列布局
+   顶栏 → 阶段 → 双列玩家 → 身份+发言 → 操作区 → 事件日志
    ================================================================ */
 
-/* ─── 主题变量 ─── */
+/* ─── 页面容器（半透明屏层，透出全局月亮/山影）─── */
 .game-page {
-  --gp-bg: #060a14;
-  --gp-bg2: #0a0f22;
-  --gp-panel: rgba(14, 18, 40, 0.82);
-  --gp-panel-hover: rgba(20, 26, 55, 0.9);
-  --gp-border: rgba(100, 130, 255, 0.12);
-  --gp-border-light: rgba(100, 130, 255, 0.22);
-  --gp-radius: 14px;
-  --gp-radius-sm: 10px;
-  --gp-shadow: 0 6px 28px rgba(0, 0, 0, 0.55);
-  --gp-text: #e4e4f0;
-  --gp-text2: #9a9ac0;
-  --gp-text3: #5e5e85;
-  --gp-accent: #6c8cff;
-  --gp-accent-soft: rgba(108, 140, 255, 0.12);
-  --gp-accent-glow: rgba(108, 140, 255, 0.4);
-  --gp-danger: #ff4757;
-  --gp-danger-soft: rgba(255, 71, 87, 0.12);
-  --gp-danger-glow: rgba(255, 71, 87, 0.35);
-  --gp-success: #2ed573;
-  --gp-success-soft: rgba(46, 213, 115, 0.12);
-  --gp-gold: #ffa502;
-  --gp-gold-soft: rgba(255, 165, 2, 0.12);
-  --gp-gold-glow: rgba(255, 165, 2, 0.35);
-  --gp-purple: #a855f7;
-  --gp-purple-soft: rgba(168, 85, 247, 0.12);
-  --gp-purple-glow: rgba(168, 85, 247, 0.35);
-  --gp-cyan: #00d2d3;
-  --gp-cyan-soft: rgba(0, 210, 211, 0.12);
-  --gp-orange: #ff9f43;
-  --gp-orange-soft: rgba(255, 159, 67, 0.12);
-  --gp-slate: #7080a0;
-  --gp-slate-soft: rgba(112, 128, 160, 0.12);
-  --gp-glass: blur(16px);
-  --gp-scroll: rgba(255, 255, 255, 0.08);
-}
+  --gp-bg: #06111f;
+  --gp-panel: rgba(7, 18, 33, 0.86);
+  --gp-border: rgba(192, 220, 255, 0.18);
+  --gp-border-light: rgba(192, 220, 255, 0.3);
+  --gp-radius: 18px;
+  --gp-radius-sm: 14px;
+  --gp-text: #eef5ff;
+  --gp-text2: #9eb0c4;
+  --gp-text3: #72869b;
+  --gp-accent: #88c9ff;
+  --gp-accent-soft: rgba(136, 201, 255, 0.14);
+  --gp-danger: #ff6b6b;
+  --gp-danger-soft: rgba(255, 107, 107, 0.14);
+  --gp-success: #58d786;
+  --gp-success-soft: rgba(88, 215, 134, 0.14);
+  --gp-gold: #f4cf87;
+  --gp-gold-soft: rgba(244, 207, 135, 0.14);
+  --gp-purple: #a78bfa;
+  --gp-purple-soft: rgba(167, 139, 250, 0.14);
+  --gp-cyan: #67e0e6;
+  --gp-cyan-soft: rgba(103, 224, 230, 0.14);
+  --gp-orange: #f0b45c;
+  --gp-orange-soft: rgba(240, 180, 92, 0.14);
+  --gp-slate: #72869b;
 
-/* ─── 页面容器：暗夜竞技场背景 ─── */
-.game-page {
   min-height: 100dvh;
-  background:
-    /* 顶部暗月光 */
-    radial-gradient(ellipse 50% 30% at 50% 0%, rgba(108, 140, 255, 0.06) 0%, transparent 60%),
-    /* 左狼眼红光 */
-    radial-gradient(circle 100px at 10% 50%, rgba(255, 71, 87, 0.04) 0%, transparent 70%),
-    /* 右预言家紫光 */
-    radial-gradient(circle 80px at 90% 40%, rgba(168, 85, 247, 0.04) 0%, transparent 70%),
-    /* 底部迷雾 */
-    radial-gradient(ellipse 100% 20% at 50% 100%, rgba(8, 12, 25, 0.7) 0%, transparent 60%),
-    /* 主渐变 */
-    linear-gradient(180deg, #060a14 0%, #0a0f22 30%, #0d1030 60%, #060a14 100%);
+  background: linear-gradient(180deg, rgba(10, 24, 48, 0.55) 0%, rgba(7, 17, 31, 0.35) 52%, rgba(4, 10, 17, 0.55) 100%);
   color: var(--gp-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  display: flex;
-  flex-direction: column;
+  font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   position: relative;
   overflow-x: hidden;
 }
 
-/* 星空 */
-.game-page::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    radial-gradient(circle 20px at 80% 5%, rgba(200, 210, 255, 0.12) 0%, rgba(180, 200, 255, 0.04) 60%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 8% 12%, rgba(255,255,255,0.45), transparent),
-    radial-gradient(1px 1px at 18% 28%, rgba(255,255,255,0.25), transparent),
-    radial-gradient(2px 2px at 28% 8%, rgba(108,140,255,0.5), transparent),
-    radial-gradient(1px 1px at 38% 22%, rgba(255,255,255,0.2), transparent),
-    radial-gradient(1.5px 1.5px at 48% 5%, rgba(255,255,255,0.35), transparent),
-    radial-gradient(1px 1px at 58% 18%, rgba(255,255,255,0.28), transparent),
-    radial-gradient(1px 1px at 68% 35%, rgba(255,255,255,0.18), transparent),
-    radial-gradient(1.5px 1.5px at 78% 12%, rgba(168,85,247,0.4), transparent),
-    radial-gradient(1px 1px at 88% 28%, rgba(255,255,255,0.25), transparent),
-    radial-gradient(1px 1px at 95% 15%, rgba(255,255,255,0.2), transparent),
-    radial-gradient(1.2px 1.2px at 5% 48%, rgba(255,255,255,0.15), transparent),
-    radial-gradient(1px 1px at 52% 42%, rgba(255,255,255,0.12), transparent),
-    radial-gradient(1.5px 1.5px at 72% 55%, rgba(255,255,255,0.18), transparent),
-    radial-gradient(1px 1px at 92% 48%, rgba(255,255,255,0.15), transparent);
-  pointer-events: none;
-  z-index: 0;
-  animation: gp-twinkle 8s ease-in-out infinite alternate;
-}
-
-@keyframes gp-twinkle {
-  0% { opacity: 0.7; }
-  100% { opacity: 1; }
-}
-
-/* 底部竞技场地纹 */
-.game-page::after {
-  content: '';
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 80px;
-  background: linear-gradient(0deg, rgba(6, 10, 20, 0.8) 0%, rgba(6, 10, 20, 0.3) 40%, transparent 100%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.game-page__inner {
-  position: relative;
-  z-index: 1;
+/* ─── 单列外壳 ─── */
+.game-shell {
   width: 100%;
-  max-width: 1500px;
+  max-width: 900px;
   margin: 0 auto;
-  padding: 10px 16px 16px;
-  flex: 1;
+  padding: 14px clamp(12px, 3vw, 20px) calc(24px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   min-height: 100dvh;
 }
 
-/* ─── 顶部状态栏 ─── */
-.game-header {
+/* ─── 顶栏 ─── */
+.gp-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  height: 54px;
-  padding: 0 20px;
-  background: var(--gp-panel);
-  border: 1px solid var(--gp-border);
-  border-radius: var(--gp-radius);
-  backdrop-filter: var(--gp-glass);
-  flex-shrink: 0;
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3);
+  gap: 10px;
 }
-
-.game-header__left { display: flex; align-items: center; gap: 12px; }
-
-.game-header__phase-icon {
-  font-size: 22px;
-  filter: drop-shadow(0 0 8px rgba(200, 220, 255, 0.35));
-  animation: gp-icon-pulse 3s ease-in-out infinite;
-}
-
-@keyframes gp-icon-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
-}
-
-.game-header__phase-text { font-size: 16px; font-weight: 700; color: var(--gp-text); }
-.game-header__round { font-size: 13px; color: var(--gp-text2); }
-.game-header__right { display: flex; align-items: center; gap: 12px; }
-
-.game-header__status-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
+.gp-topbar__title { font-size: 26px; line-height: 1.1; }
+.gp-topbar small { display: block; color: var(--gp-text2); font-size: 11px; letter-spacing: 0.06em; }
+.gp-topbar__right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.tag-pill--live { color: var(--gp-success); }
+.tag-pill--live i {
+  width: 7px; height: 7px; border-radius: 50%;
   background: var(--gp-success);
-  box-shadow: 0 0 8px var(--gp-success);
-  animation: gp-breathe 2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(88, 215, 134, 0.5);
+  animation: gpLive 1.8s infinite;
+}
+@keyframes gpLive {
+  0% { box-shadow: 0 0 0 0 rgba(88, 215, 134, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(88, 215, 134, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(88, 215, 134, 0); }
 }
 
-@keyframes gp-breathe {
-  0%, 100% { opacity: 0.5; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.15); }
+/* ─── 角色计数 ─── */
+.gp-status { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+/* ─── 阶段 ─── */
+.gp-phase { text-align: center; padding: 4px 0 2px; }
+.gp-phase h2 { margin: 0; font-size: 28px; }
+.gp-phase__orb {
+  width: 92px; height: 92px;
+  margin: 12px auto;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 34px;
+  border: 2px solid #77bfff;
+  box-shadow: 0 0 28px rgba(101, 184, 255, 0.18), inset 0 0 18px rgba(101, 184, 255, 0.1);
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.12), transparent 60%);
 }
+.gp-phase small { color: var(--gp-text2); letter-spacing: 0.12em; font-size: 12px; }
 
-.game-header__status-text { font-size: 13px; color: var(--gp-text2); }
-.game-header__alive-count { font-size: 13px; color: var(--gp-text2); }
-.game-header__mode-badge {
-  font-size: 11px; padding: 3px 10px;
-  border-radius: 6px;
-  background: var(--gp-accent-soft);
-  color: var(--gp-accent);
-  font-weight: 600;
-}
+/* ─── 玩家双列列表 ─── */
+.gp-players { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.gp-players__col { display: grid; gap: 7px; align-content: start; }
 
-/* ─── 三栏主布局 ─── */
-.game-layout {
-  display: grid;
-  grid-template-columns: 200px 1fr 300px;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-}
-
-.game-layout__left { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.game-layout__center { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.game-layout__right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-
-/* 中间面板不需要额外 padding */
-.game-layout__center > .gp-panel { padding: 0; }
-
-/* ─── 通用玻璃面板 ─── */
-.gp-panel {
-  background: var(--gp-panel);
-  border: 1px solid var(--gp-border);
-  border-radius: var(--gp-radius);
-  backdrop-filter: var(--gp-glass);
-  box-shadow: var(--gp-shadow);
-  overflow: hidden;
-  transition: border-color 0.2s ease;
-}
-
-.gp-panel__header {
+.mini-player {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 11px 16px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--gp-text);
-  border-bottom: 1px solid var(--gp-border);
-  background: rgba(10, 14, 32, 0.3);
-}
-
-.gp-panel__body { padding: 12px 16px; }
-
-/* ─── 身份面板 (左侧) ─── */
-.identity-panel {
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  overflow: hidden;
-}
-
-/* 角色主题左侧光条 */
-.identity-panel::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 3px;
-  z-index: 2;
-}
-
-.identity-panel--werewolf::before { background: linear-gradient(180deg, var(--gp-danger), transparent 60%); }
-.identity-panel--seer::before { background: linear-gradient(180deg, var(--gp-purple), transparent 60%); }
-.identity-panel--witch::before { background: linear-gradient(180deg, var(--gp-cyan), transparent 60%); }
-.identity-panel--hunter::before { background: linear-gradient(180deg, var(--gp-orange), transparent 60%); }
-.identity-panel--guard::before { background: linear-gradient(180deg, var(--gp-success), transparent 60%); }
-.identity-panel--villager::before { background: linear-gradient(180deg, var(--gp-slate), transparent 60%); }
-
-/* 角色背景光晕 */
-.identity-panel--werewolf { background: linear-gradient(160deg, rgba(255, 71, 87, 0.06) 0%, rgba(14, 18, 40, 0.82) 50%); }
-.identity-panel--seer { background: linear-gradient(160deg, rgba(168, 85, 247, 0.06) 0%, rgba(14, 18, 40, 0.82) 50%); }
-.identity-panel--witch { background: linear-gradient(160deg, rgba(0, 210, 211, 0.06) 0%, rgba(14, 18, 40, 0.82) 50%); }
-.identity-panel--hunter { background: linear-gradient(160deg, rgba(255, 159, 67, 0.06) 0%, rgba(14, 18, 40, 0.82) 50%); }
-.identity-panel--guard { background: linear-gradient(160deg, rgba(46, 213, 115, 0.06) 0%, rgba(14, 18, 40, 0.82) 50%); }
-.identity-panel--villager { background: linear-gradient(160deg, rgba(112, 128, 160, 0.04) 0%, rgba(14, 18, 40, 0.82) 50%); }
-
-.identity-panel__hero {
-  text-align: center;
-  padding: 20px 16px 16px;
-  border-bottom: 1px solid var(--gp-border);
-  position: relative;
-}
-
-.identity-panel__avatar {
-  font-size: 52px;
-  line-height: 1;
-  margin-bottom: 8px;
-  display: inline-block;
-  position: relative;
-}
-
-.identity-panel--werewolf .identity-panel__avatar { filter: drop-shadow(0 0 18px var(--gp-danger-glow)); }
-.identity-panel--seer .identity-panel__avatar { filter: drop-shadow(0 0 18px var(--gp-purple-glow)); }
-.identity-panel--witch .identity-panel__avatar { filter: drop-shadow(0 0 18px rgba(0, 210, 211, 0.4)); }
-.identity-panel--hunter .identity-panel__avatar { filter: drop-shadow(0 0 18px var(--gp-orange-glow, rgba(255, 159, 67, 0.35))); }
-.identity-panel--guard .identity-panel__avatar { filter: drop-shadow(0 0 18px rgba(46, 213, 115, 0.4)); }
-.identity-panel--villager .identity-panel__avatar { filter: drop-shadow(0 0 12px rgba(112, 128, 160, 0.25)); }
-
-.identity-panel__role-name {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--gp-text);
-  margin-top: 4px;
-  letter-spacing: 1px;
-}
-
-.identity-panel__seat { font-size: 13px; color: var(--gp-text2); margin-top: 2px; }
-
-.identity-panel__section { display: flex; flex-direction: column; gap: 6px; padding: 0 16px; margin-top: 12px; }
-
-.identity-panel__section-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--gp-text3);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-}
-
-.identity-panel__companions { display: flex; flex-wrap: wrap; gap: 4px; }
-
-.identity-panel__info-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  color: var(--gp-text2);
-  padding: 3px 0;
-}
-
-.identity-panel__info-value { color: var(--gp-text); font-weight: 600; }
-.identity-panel__seer-record { padding: 2px 0; }
-.identity-panel__witch-drugs { display: flex; flex-direction: column; gap: 4px; }
-
-.witch-drug {
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 13px;
-  text-align: center;
-}
-
-.witch-drug--available { background: var(--gp-success-soft); color: var(--gp-success); }
-.witch-drug--used { background: rgba(80, 80, 100, 0.12); color: var(--gp-text3); text-decoration: line-through; }
-
-/* ─── 圆桌玩家区域 ─── */
-.round-table {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  min-height: 480px;
-  max-height: 650px;
-  margin: 0 auto;
-  overflow: visible;
-}
-
-.round-table__seats { position: relative; width: 100%; height: 100%; }
-
-/* ─── 缩放控制按钮 ─── */
-.round-table__zoom-controls {
-  position: absolute;
-  bottom: 10px;
-  right: 14px;
-  display: flex;
-  gap: 4px;
-  z-index: 10;
-}
-
-.round-table__zoom-controls button {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  border: 1px solid var(--gp-border);
-  background: var(--gp-panel);
-  color: var(--gp-text2);
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  backdrop-filter: var(--gp-glass);
-  transition: all 0.15s ease;
-}
-
-.round-table__zoom-controls button:hover {
-  background: var(--gp-accent-soft);
-  border-color: var(--gp-accent);
-  color: var(--gp-accent);
-}
-
-/* ─── 纯AI模式：模型名标签 ─── */
-.round-card__model {
-  font-size: 8px;
-  color: var(--gp-text3);
-  text-align: center;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.03);
-  max-width: 80px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 1px;
-}
-
-/* 中央装饰 */
-.round-table__center {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.round-table__icon {
-  font-size: 40px;
-  line-height: 1;
-  animation: gp-float 4s ease-in-out infinite;
-}
-
-.game-page:not(.game-page--night) .round-table__icon {
-  filter: drop-shadow(0 0 20px rgba(255, 165, 2, 0.4));
-}
-
-.game-page--night .round-table__icon {
-  filter: drop-shadow(0 0 20px rgba(108, 140, 255, 0.4));
-}
-
-@keyframes gp-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
-
-.round-table__phase { font-size: 14px; font-weight: 700; color: var(--gp-text); margin-top: 4px; }
-.round-table__round { font-size: 11px; color: var(--gp-text2); margin-top: 2px; }
-
-/* 圆桌内环 */
-.round-table::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 40%;
-  height: 40%;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  border: 1px solid rgba(108, 140, 255, 0.08);
-  background: radial-gradient(circle, rgba(15, 18, 50, 0.4) 0%, transparent 70%);
-  pointer-events: none;
-}
-
-/* 圆桌外环 */
-.round-table::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 60%;
-  height: 60%;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  border: 1px dashed rgba(108, 140, 255, 0.06);
-  pointer-events: none;
-}
-
-/* ─── 圆桌玩家卡片 ─── */
-.round-card {
-  position: absolute;
-  width: 92px;
-  padding: 8px 4px 6px;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.18);
   border-radius: 12px;
-  background: var(--gp-panel);
-  border: 2px solid var(--gp-border);
-  backdrop-filter: var(--gp-glass);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+}
+.mini-player__avatar { width: 36px; height: 36px; font-size: 14px; flex: none; }
+.mini-player__body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mini-player__body b { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-player__status { font-size: 11px; color: var(--gp-text3); }
+.mini-player__status--speaking { color: #72c1ff; }
+.mini-player__model { font-size: 10px; color: var(--gp-text3); opacity: 0.85; }
+
+.mini-player--speaking { border-color: #64b7ff; box-shadow: 0 0 18px rgba(91, 173, 255, 0.14); }
+.mini-player--speaking .mini-player__avatar { box-shadow: 0 0 0 2px #64b7ff; }
+.mini-player--dead { opacity: 0.42; filter: grayscale(0.7); }
+.mini-player--self { border-color: rgba(244, 207, 135, 0.5); }
+.mini-player--companion { border-color: rgba(255, 107, 107, 0.4); }
+.mini-player--selectable { cursor: pointer; border-color: var(--gp-gold); box-shadow: 0 0 14px rgba(244, 207, 135, 0.16); }
+.mini-player--selectable:hover { transform: translateY(-1px); box-shadow: 0 0 20px rgba(244, 207, 135, 0.3); }
+
+/* ─── 身份 + 发言 行 ─── */
+.gp-role-row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: stretch; }
+.gp-role-slot, .gp-speech-slot { min-width: 0; display: flex; flex-direction: column; }
+
+/* 身份卡（参考 role-card 棕金） */
+.identity-panel {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
-  z-index: 1;
-  transform: translate(-50%, -50%);
-  box-sizing: border-box;
-}
-
-.round-card:hover {
-  transform: translate(-50%, -50%) scale(1.08);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
-  z-index: 2;
-}
-
-/* 头像光环 */
-.round-card__avatar {
-  margin-bottom: 2px;
-  position: relative;
-}
-
-.round-card__avatar::after {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
-}
-
-/* 自己 — 蓝色光环 */
-.round-card--self .round-card__avatar::after {
-  border-color: var(--gp-accent);
-  box-shadow: 0 0 10px rgba(108, 140, 255, 0.3);
-  animation: gp-ring-pulse 2.5s ease-in-out infinite;
-}
-
-@keyframes gp-ring-pulse {
-  0%, 100% { box-shadow: 0 0 6px rgba(108, 140, 255, 0.2); }
-  50% { box-shadow: 0 0 16px rgba(108, 140, 255, 0.45); }
-}
-
-/* 狼人同伴 — 暗红 */
-.round-card--companion .round-card__avatar::after {
-  border-color: #8b0000;
-  box-shadow: 0 0 8px rgba(139, 0, 0, 0.3);
-}
-
-/* 发言者 — 金色 */
-.round-card--speaking .round-card__avatar::after {
-  border-color: var(--gp-gold);
-  box-shadow: 0 0 14px var(--gp-gold-glow);
-  animation: gp-ring-gold 2s ease-in-out infinite;
-}
-
-@keyframes gp-ring-gold {
-  0%, 100% { box-shadow: 0 0 8px rgba(255, 165, 2, 0.2); }
-  50% { box-shadow: 0 0 18px rgba(255, 165, 2, 0.5); }
-}
-
-/* 死亡 */
-.round-card--dead .round-card__avatar::after {
-  border-color: rgba(100, 100, 100, 0.3);
-}
-
-.round-card__seat { font-size: 13px; font-weight: 800; color: var(--gp-text); line-height: 1.1; }
-
-.round-card__name {
-  font-size: 10px;
-  color: var(--gp-text2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 80px;
-  text-align: center;
-}
-
-.round-card__tags { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; }
-
-.round-card__tag {
-  font-size: 8px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
-.round-card__tag--alive { background: var(--gp-success-soft); color: var(--gp-success); }
-.round-card__tag--dead { background: var(--gp-danger-soft); color: var(--gp-danger); }
-.round-card__tag--self { background: var(--gp-accent-soft); color: var(--gp-accent); font-weight: 700; }
-.round-card__tag--companion { background: rgba(139, 0, 0, 0.3); color: #ff8888; }
-.round-card__tag--role { background: var(--gp-purple-soft); color: var(--gp-purple); }
-.round-card__tag--werewolf { background: var(--gp-danger-soft); color: var(--gp-danger); }
-
-/* 卡片状态边框 */
-.round-card--self {
-  border-color: var(--gp-accent);
-  box-shadow: 0 0 14px rgba(108, 140, 255, 0.15), 0 0 0 1px var(--gp-accent);
-}
-
-.round-card--companion { border-color: #8b0000; box-shadow: 0 0 10px rgba(139, 0, 0, 0.25); }
-
-.round-card--speaking {
-  border-color: var(--gp-gold);
-  box-shadow: 0 0 18px rgba(255, 165, 2, 0.2);
-  animation: gp-glow-gold 2s ease-in-out infinite;
-}
-
-@keyframes gp-glow-gold {
-  0%, 100% { box-shadow: 0 0 10px rgba(255, 165, 2, 0.1); }
-  50% { box-shadow: 0 0 24px rgba(255, 165, 2, 0.35); }
-}
-
-/* 可选目标 — 金色闪烁 */
-.round-card--selectable {
-  cursor: pointer;
-  border-color: var(--gp-gold);
-  animation: gp-glow-select 1.8s ease-in-out infinite;
-}
-
-.round-card--selectable:hover {
-  transform: translate(-50%, -50%) scale(1.14) !important;
-  box-shadow: 0 0 28px rgba(255, 165, 2, 0.45);
-}
-
-@keyframes gp-glow-select {
-  0%, 100% { box-shadow: 0 0 6px rgba(255, 165, 2, 0.1); }
-  50% { box-shadow: 0 0 18px rgba(255, 165, 2, 0.3); }
-}
-
-/* 死亡蒙层 */
-.round-card--dead { opacity: 0.35; filter: grayscale(0.7); }
-
-.round-card__death-overlay {
-  position: absolute;
-  inset: 0;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.3);
-  pointer-events: none;
-}
-
-/* ─── 当前发言面板 (右上) ─── */
-.current-speech { display: flex; flex-direction: column; }
-
-.current-speech__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 16px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--gp-text);
-  border-bottom: 1px solid var(--gp-border);
-  background: rgba(10, 14, 32, 0.3);
-}
-
-.current-speech__icon { font-size: 16px; }
-.current-speech__main { padding: 12px 16px; }
-
-.current-speech__card {
-  padding: 16px;
+  border: 1px solid #8b6334;
   border-radius: var(--gp-radius-sm);
-  background: rgba(108, 140, 255, 0.04);
-  border: 1px solid var(--gp-border-light);
-  position: relative;
-  box-shadow: 0 0 24px rgba(108, 140, 255, 0.04);
-  animation: gp-speech-glow 3s ease-in-out infinite;
+  background: linear-gradient(160deg, #1c1713, #090b0e);
+  overflow: hidden;
 }
+.identity-panel__hero { text-align: center; padding: 16px 12px 12px; border-bottom: 1px solid rgba(139, 99, 52, 0.35); }
+.identity-panel__avatar { font-size: 42px; line-height: 1; display: inline-block; }
+.identity-panel__role-name { font-family: var(--font-display); font-size: 22px; color: #f0d8ad; margin-top: 6px; }
+.identity-panel__seat { font-size: 12px; color: #c2b394; margin-top: 2px; }
+.identity-panel__section { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; }
+.identity-panel__section-title { font-size: 11px; font-weight: 700; color: #c2b394; letter-spacing: 0.6px; }
+.identity-panel__companions { display: flex; flex-wrap: wrap; gap: 4px; }
+.identity-panel__info-row { display: flex; justify-content: space-between; font-size: 12px; color: #c2b394; padding: 2px 0; }
+.identity-panel__info-value { color: #f0d8ad; font-weight: 600; }
+.identity-panel__seer-record { padding: 1px 0; }
+.identity-panel__witch-drugs { display: flex; flex-direction: column; gap: 4px; }
+.witch-drug { padding: 6px 10px; border-radius: 8px; font-size: 12px; text-align: center; }
+.witch-drug--available { background: var(--gp-success-soft); color: var(--gp-success); }
+.witch-drug--used { background: rgba(80, 80, 100, 0.14); color: var(--gp-text3); text-decoration: line-through; }
 
-@keyframes gp-speech-glow {
-  0%, 100% { box-shadow: 0 0 12px rgba(108, 140, 255, 0.03); }
-  50% { box-shadow: 0 0 28px rgba(108, 140, 255, 0.08); }
-}
-
-.current-speech__card--pk {
-  background: var(--gp-orange-soft);
-  border-color: rgba(255, 159, 67, 0.2);
-  box-shadow: 0 0 16px rgba(255, 159, 67, 0.04);
-  animation: none;
-}
-
-.current-speech__card--last-words {
-  background: var(--gp-purple-soft);
-  border-color: rgba(168, 85, 247, 0.2);
-  box-shadow: 0 0 16px rgba(168, 85, 247, 0.04);
-  animation: none;
-}
-
-.current-speech__card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
-.current-speech__card-seat { font-size: 17px; font-weight: 800; color: var(--gp-text); }
-
-.current-speech__pk-badge {
-  font-size: 10px; padding: 2px 8px; border-radius: 4px;
-  background: var(--gp-orange-soft); color: var(--gp-orange); font-weight: 700;
-}
-
-.current-speech__lw-badge {
-  font-size: 10px; padding: 2px 8px; border-radius: 4px;
-  background: var(--gp-purple-soft); color: var(--gp-purple); font-weight: 700;
-}
-
-.current-speech__card-content {
-  font-size: 14px;
-  line-height: 1.75;
-  color: var(--gp-text);
-  word-break: break-word;
-}
-
-.current-speech__waiting {
-  padding: 30px 14px;
-  text-align: center;
-  color: var(--gp-text3);
-  font-size: 14px;
-}
-
-.current-speech__waiting-icon {
-  font-size: 32px;
-  margin-bottom: 8px;
-  opacity: 0.4;
-  animation: gp-float 4s ease-in-out infinite;
-}
-
-.current-speech__summaries {
-  padding: 8px 14px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  border-top: 1px solid var(--gp-border);
-}
-
+/* 当前发言（参考 chat 框） */
+.current-speech { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--gp-border); border-radius: var(--gp-radius-sm); background: rgba(2, 10, 17, 0.82); overflow: hidden; }
+.current-speech__header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 14px; font-weight: 700; border-bottom: 1px solid var(--gp-border); }
+.current-speech__icon { font-size: 15px; }
+.current-speech__main { padding: 12px 14px; }
+.current-speech__card { padding: 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--gp-border); }
+.current-speech__card--pk { background: var(--gp-orange-soft); border-color: rgba(240, 180, 92, 0.25); }
+.current-speech__card--last-words { background: var(--gp-purple-soft); border-color: rgba(167, 139, 250, 0.25); }
+.current-speech__card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.current-speech__card-seat { font-size: 16px; font-weight: 800; }
+.current-speech__pk-badge, .current-speech__lw-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+.current-speech__pk-badge { background: var(--gp-orange-soft); color: var(--gp-orange); }
+.current-speech__lw-badge { background: var(--gp-purple-soft); color: var(--gp-purple); }
+.current-speech__card-content { font-size: 13px; line-height: 1.7; color: var(--gp-text); word-break: break-word; }
+.current-speech__waiting { padding: 26px 14px; text-align: center; color: var(--gp-text3); font-size: 13px; }
+.current-speech__waiting-icon { font-size: 30px; margin-bottom: 8px; opacity: 0.4; }
+.current-speech__summaries { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--gp-border); }
 .current-speech__summaries-title { font-size: 11px; color: var(--gp-text3); font-weight: 600; }
-
-.current-speech__summary {
-  display: flex;
-  gap: 6px;
-  font-size: 12px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.15s ease;
-}
-
-.current-speech__summary:hover { background: rgba(255, 255, 255, 0.05); }
+.current-speech__summary { display: flex; gap: 6px; font-size: 12px; padding: 4px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.02); }
 .current-speech__summary-seat { font-weight: 700; color: var(--gp-text2); flex-shrink: 0; }
 .current-speech__summary-text { color: var(--gp-text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ─── 操作面板 (右下) ─── */
-.action-panel { flex: 1; min-height: 0; }
+/* ─── 操作区 ─── */
+.gp-action { overflow: hidden; }
+.gp-panel__header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; font-size: 14px; font-weight: 700; border-bottom: 1px solid var(--gp-border); background: rgba(11, 26, 45, 0.4); }
+.gp-panel__body { padding: 14px 16px; }
 
-.action-prompt {
-  padding: 14px 16px;
-  border-radius: var(--gp-radius-sm);
-  text-align: center;
-  margin-bottom: 10px;
-  position: relative;
-  overflow: hidden;
-}
-
-.action-prompt::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-}
-
+.action-prompt { padding: 14px 16px; border-radius: var(--gp-radius-sm); text-align: center; margin-bottom: 10px; position: relative; overflow: hidden; }
+.action-prompt::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
 .action-prompt--kill::before { background: linear-gradient(90deg, transparent, var(--gp-danger), transparent); }
 .action-prompt--verify::before { background: linear-gradient(90deg, transparent, var(--gp-purple), transparent); }
 .action-prompt--save::before { background: linear-gradient(90deg, transparent, var(--gp-cyan), transparent); }
 .action-prompt--guard::before { background: linear-gradient(90deg, transparent, var(--gp-success), transparent); }
 .action-prompt--hunter_shoot::before { background: linear-gradient(90deg, transparent, var(--gp-orange), transparent); }
 .action-prompt--vote::before { background: linear-gradient(90deg, transparent, var(--gp-gold), transparent); }
-.action-prompt--speech::before,
-.action-prompt--last_words::before { background: linear-gradient(90deg, transparent, var(--gp-success), transparent); }
+.action-prompt--speech::before, .action-prompt--last_words::before { background: linear-gradient(90deg, transparent, var(--gp-success), transparent); }
 .action-prompt--default::before { background: linear-gradient(90deg, transparent, var(--gp-accent), transparent); }
-
-.action-prompt__title { font-size: 15px; font-weight: 800; }
+.action-prompt__title { font-size: 15px; font-weight: 800; font-family: var(--font-display); }
 .action-prompt__desc { font-size: 13px; color: var(--gp-text); margin-top: 4px; }
 .action-prompt__companions { margin-top: 4px; font-size: 12px; color: var(--gp-danger); }
+.action-prompt__teammate { margin-top: 6px; font-size: 12px; color: var(--gp-gold); }
 .action-prompt__targets { margin-top: 4px; font-size: 12px; color: var(--gp-text2); }
-
 .action-prompt--kill { background: var(--gp-danger-soft); }
 .action-prompt--kill .action-prompt__title { color: var(--gp-danger); }
-.action-prompt--verify { background: rgba(168, 85, 247, 0.1); }
+.action-prompt--verify { background: var(--gp-purple-soft); }
 .action-prompt--verify .action-prompt__title { color: var(--gp-purple); }
 .action-prompt--save { background: var(--gp-cyan-soft); }
 .action-prompt--save .action-prompt__title { color: var(--gp-cyan); }
@@ -747,51 +203,31 @@
 .action-prompt--hunter_shoot .action-prompt__title { color: var(--gp-orange); }
 .action-prompt--vote { background: var(--gp-gold-soft); }
 .action-prompt--vote .action-prompt__title { color: var(--gp-gold); }
-.action-prompt--speech,
-.action-prompt--last_words { background: var(--gp-success-soft); }
-.action-prompt--speech .action-prompt__title,
-.action-prompt--last_words .action-prompt__title { color: var(--gp-success); }
+.action-prompt--speech, .action-prompt--last_words { background: var(--gp-success-soft); }
+.action-prompt--speech .action-prompt__title, .action-prompt--last_words .action-prompt__title { color: var(--gp-success); }
 .action-prompt--default { background: var(--gp-accent-soft); }
 .action-prompt--default .action-prompt__title { color: var(--gp-accent); }
 
-/* 技能按钮 */
-.action-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-}
-
+/* 目标/技能按钮（参考 action 深蓝块） */
+.action-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
 .action-buttons .ant-btn {
-  min-width: 52px;
-  border-radius: 8px !important;
-  font-weight: 600 !important;
-  border: 1px solid var(--gp-border-light) !important;
-  background: rgba(255, 255, 255, 0.04) !important;
-  color: var(--gp-text) !important;
-  transition: all 0.2s ease !important;
-}
-
-.action-buttons .ant-btn:hover {
-  background: var(--gp-accent-soft) !important;
-  border-color: var(--gp-accent) !important;
-  color: var(--gp-accent) !important;
-  box-shadow: 0 0 12px rgba(108, 140, 255, 0.15) !important;
-  transform: translateY(-1px) !important;
-}
-
-.action-buttons .ant-btn:active { transform: translateY(0) !important; }
-
-.witch-info {
-  padding: 10px 14px;
-  border-radius: 8px;
-  text-align: center;
-  margin-bottom: 8px;
+  height: 44px;
+  background: #0a1a2b !important;
+  border: 1px solid #2d4d6c !important;
+  color: #d3e6f9 !important;
+  border-radius: 14px !important;
   font-size: 14px;
+  font-weight: 600;
+}
+.action-buttons .ant-btn:hover {
+  background: #10263c !important;
+  border-color: #66baff !important;
+  box-shadow: 0 0 18px rgba(95, 180, 255, 0.16) !important;
 }
 
-.witch-info--kill { background: var(--gp-danger-soft); color: var(--gp-danger); border: 1px solid rgba(255, 71, 87, 0.2); }
-.witch-info--peace { background: var(--gp-success-soft); color: var(--gp-success); border: 1px solid rgba(46, 213, 115, 0.2); }
+.witch-info { padding: 10px 14px; border-radius: 10px; text-align: center; margin-bottom: 8px; font-size: 14px; }
+.witch-info--kill { background: var(--gp-danger-soft); color: var(--gp-danger); border: 1px solid rgba(255, 107, 107, 0.25); }
+.witch-info--peace { background: var(--gp-success-soft); color: var(--gp-success); border: 1px solid rgba(88, 215, 134, 0.25); }
 
 .action-loading { text-align: center; padding: 16px; color: var(--gp-text2); font-size: 13px; }
 .action-identity { text-align: center; padding: 8px; }
@@ -800,171 +236,76 @@
 .action-identity__seer-records { margin-top: 8px; }
 .action-identity__seer-title { font-size: 12px; color: var(--gp-text2); }
 
-/* ─── 底部事件日志面板 ─── */
-.event-log-panel {
-  background: var(--gp-panel);
-  border: 1px solid var(--gp-border);
-  border-radius: var(--gp-radius);
-  backdrop-filter: var(--gp-glass);
-  box-shadow: var(--gp-shadow);
-  display: flex;
-  flex-direction: column;
-}
-
-.event-log-panel__filters {
-  display: flex;
-  gap: 4px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--gp-border);
-  overflow-x: auto;
-  flex-shrink: 0;
-}
-
-.event-log-panel__filter {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--gp-text3);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s ease;
-}
-
-.event-log-panel__filter:hover { background: rgba(255, 255, 255, 0.04); color: var(--gp-text2); }
-
-.event-log-panel__filter--active {
-  background: var(--gp-accent-soft);
-  color: var(--gp-accent);
-  border-color: rgba(108, 140, 255, 0.2);
-}
-
-.event-log-panel__scroll {
-  max-height: 350px;
-  overflow-y: auto;
-  padding: 8px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.event-log-panel__scroll::-webkit-scrollbar { width: 5px; }
-.event-log-panel__scroll::-webkit-scrollbar-thumb { background: var(--gp-scroll); border-radius: 3px; }
-.event-log-panel__empty { color: var(--gp-text3); font-size: 13px; padding: 20px; text-align: center; }
-
-/* 日志条目 */
-.log-entry {
-  padding: 7px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--gp-text);
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.15s ease;
-  animation: gp-log-fadein 0.3s ease;
-}
-
-@keyframes gp-log-fadein {
-  from { opacity: 0; transform: translateX(-8px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-.log-entry:hover { background: rgba(255, 255, 255, 0.04); }
-
-.log-entry__time {
-  font-size: 11px;
-  color: var(--gp-text3);
-  margin-right: 8px;
-  white-space: nowrap;
-}
-
-.log-entry--speech { background: rgba(108, 140, 255, 0.04); border-left: 3px solid var(--gp-accent); }
-.log-entry--vote { background: var(--gp-gold-soft); border-left: 3px solid var(--gp-gold); }
-.log-entry--result { background: var(--gp-accent-soft); border-left: 3px solid var(--gp-accent); font-weight: 600; }
-.log-entry--death { background: var(--gp-danger-soft); border-left: 3px solid var(--gp-danger); color: var(--gp-danger); }
-.log-entry--night { background: rgba(168, 85, 247, 0.04); border-left: 3px solid var(--gp-purple); }
-.log-entry--last-words { background: rgba(168, 85, 247, 0.04); border-left: 3px solid var(--gp-purple); color: var(--gp-text2); font-style: italic; }
-.log-entry--gameover {
-  background: var(--gp-gold-soft);
-  border-left: 4px solid var(--gp-gold);
-  font-weight: 700;
-  white-space: pre-wrap;
-  padding: 14px 16px;
-  font-size: 14px;
-  line-height: 1.7;
-}
-.log-entry--system { opacity: 0.5; }
-
-/* ─── 阵容编辑 / 等待 / 结算 ─── */
+/* 等待 / 阵容 / 结算 */
+.waiting-panel { padding: 24px 16px; text-align: center; color: var(--gp-text3); font-size: 13px; }
+.waiting-panel__icon { font-size: 38px; margin-bottom: 10px; opacity: 0.4; }
 .roster-config { display: flex; flex-direction: column; gap: 10px; }
 .roster-config__roles { display: flex; flex-wrap: wrap; gap: 8px; }
 .roster-config__role-item { font-size: 12px; display: flex; align-items: center; gap: 4px; }
 .game-over-panel { display: flex; flex-direction: column; gap: 10px; }
 
-.waiting-panel { padding: 24px 16px; text-align: center; color: var(--gp-text3); font-size: 13px; }
-.waiting-panel__icon { font-size: 40px; margin-bottom: 10px; opacity: 0.4; animation: gp-float 4s ease-in-out infinite; }
+/* ─── 事件日志 ─── */
+.event-log-panel { border: 1px solid var(--gp-border); border-radius: var(--gp-radius); background: linear-gradient(180deg, rgba(9, 24, 41, 0.92), rgba(4, 13, 24, 0.94)); display: flex; flex-direction: column; overflow: hidden; }
+.event-log-panel__filters { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--gp-border); overflow-x: auto; flex-shrink: 0; }
+.event-log-panel__filter { display: flex; align-items: center; gap: 4px; padding: 5px 12px; border-radius: 999px; border: 1px solid transparent; background: transparent; color: var(--gp-text3); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.event-log-panel__filter:hover { background: rgba(255, 255, 255, 0.04); color: var(--gp-text2); }
+.event-log-panel__filter--active { background: var(--gp-accent-soft); color: var(--gp-accent); border-color: rgba(136, 201, 255, 0.25); }
+.event-log-panel__scroll { max-height: 320px; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.event-log-panel__scroll::-webkit-scrollbar { width: 5px; }
+.event-log-panel__scroll::-webkit-scrollbar-thumb { background: rgba(192, 220, 255, 0.16); border-radius: 3px; }
+.event-log-panel__empty { color: var(--gp-text3); font-size: 13px; padding: 20px; text-align: center; }
+
+.log-entry { padding: 7px 12px; border-radius: 8px; font-size: 13px; line-height: 1.55; color: var(--gp-text); background: rgba(255, 255, 255, 0.02); }
+.log-entry__time { font-size: 11px; color: var(--gp-text3); margin-right: 8px; white-space: nowrap; }
+.log-entry--speech { background: rgba(136, 201, 255, 0.05); border-left: 3px solid var(--gp-accent); }
+.log-entry--vote { background: var(--gp-gold-soft); border-left: 3px solid var(--gp-gold); }
+.log-entry--result { background: var(--gp-accent-soft); border-left: 3px solid var(--gp-accent); font-weight: 600; }
+.log-entry--death { background: var(--gp-danger-soft); border-left: 3px solid var(--gp-danger); color: var(--gp-danger); }
+.log-entry--night { background: rgba(167, 139, 250, 0.05); border-left: 3px solid var(--gp-purple); }
+.log-entry--last-words { background: rgba(167, 139, 250, 0.05); border-left: 3px solid var(--gp-purple); color: var(--gp-text2); font-style: italic; }
+.log-entry--gameover { background: var(--gp-gold-soft); border-left: 4px solid var(--gp-gold); font-weight: 700; white-space: pre-wrap; padding: 14px 16px; font-size: 14px; line-height: 1.7; }
+.log-entry--system { opacity: 0.55; }
 
 /* ─── 响应式 ─── */
-
-@media (max-width: 1200px) {
-  .game-layout {
-    grid-template-columns: 180px 1fr 260px;
-  }
-  .round-card { width: 86px; padding: 7px 4px 5px; }
-  .identity-panel__role-name { font-size: 18px; }
-  .identity-panel__avatar { font-size: 44px; }
-}
-
-@media (max-width: 960px) {
-  .game-layout {
-    grid-template-columns: 1fr 300px;
-  }
-  .game-layout__left { display: none; }
-}
-
 @media (max-width: 768px) {
-  .game-page__inner { padding: 8px 10px 14px; gap: 10px; }
-  .game-header { height: auto; min-height: 44px; padding: 8px 12px; flex-wrap: wrap; gap: 6px; }
-
-  .game-layout { grid-template-columns: 1fr; }
-  .game-layout__right { max-height: none; }
-
-  .round-table { min-height: 300px; aspect-ratio: 1 / 0.85; }
-
-  .round-card { width: 78px; padding: 6px 4px 5px; }
-  .round-card__avatar .ant-avatar { width: 32px !important; height: 32px !important; font-size: 13px !important; }
-  .round-card__seat { font-size: 13px; }
-  .round-card__name { font-size: 10px; max-width: 70px; }
-  .round-card__tag { font-size: 8px; padding: 0px 4px; }
-
+  .game-shell { padding: 10px 12px calc(20px + env(safe-area-inset-bottom)); gap: 12px; }
+  .gp-topbar__title { font-size: 22px; }
+  .gp-phase h2 { font-size: 24px; }
+  .gp-phase__orb { width: 78px; height: 78px; font-size: 28px; }
+  .gp-role-row { grid-template-columns: 1fr; }
   .event-log-panel__scroll { max-height: 240px; }
-  .action-buttons .ant-btn { min-width: 48px; min-height: 36px; }
 }
 
 @media (max-width: 480px) {
-  .game-page__inner { padding: 6px 8px 12px; gap: 8px; }
-  .game-header { padding: 6px 10px; }
-  .game-header__phase-text { font-size: 14px; }
-
-  .round-table { min-height: 240px; }
-  .round-card { width: 70px; padding: 6px 4px; border-radius: 10px; gap: 2px; }
-  .round-card__avatar .ant-avatar { width: 28px !important; height: 28px !important; font-size: 11px !important; }
-  .round-card__seat { font-size: 12px; }
-  .round-card__name { font-size: 9px; max-width: 60px; }
-
-  .round-table__icon { font-size: 36px; }
-  .round-table__phase { font-size: 13px; }
-
-  .current-speech__card { padding: 12px; }
-  .current-speech__card-content { font-size: 13px; }
-
-  .event-log-panel__filter { padding: 3px 8px; font-size: 11px; }
+  .gp-players { grid-template-columns: 1fr; }
+  .gp-topbar { flex-wrap: wrap; }
+  .gp-topbar__right { justify-content: flex-start; }
+  .action-buttons { grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); }
+  .action-buttons .ant-btn { height: 42px; }
   .event-log-panel__scroll { max-height: 200px; }
-
-  .action-buttons { gap: 6px; }
-  .action-buttons .ant-btn { min-width: 44px; min-height: 40px; font-size: 13px; }
 }
+
+/* ─── 时间线速览 ─── */
+.timeline-panel { overflow: hidden; }
+.timeline { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.timeline__round { border: 1px solid var(--gp-border); border-radius: 10px; overflow: hidden; }
+.timeline__head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: rgba(255, 255, 255, 0.02); border: 0; color: var(--gp-text); cursor: pointer; font-size: 13px; }
+.timeline__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gp-gold); flex: none; }
+.timeline__label { font-weight: 700; }
+.timeline__badges { display: flex; gap: 6px; margin-left: auto; }
+.tb { font-style: normal; font-size: 11px; color: var(--gp-text2); background: rgba(255, 255, 255, 0.05); border-radius: 999px; padding: 1px 8px; }
+.tb--death { color: var(--gp-danger); }
+.tb--vote { color: var(--gp-gold); }
+.tb--over { color: var(--gp-success); }
+.timeline__toggle { color: var(--gp-text3); }
+.timeline__detail { padding: 6px 12px 10px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--gp-border); }
+.timeline__item { font-size: 12px; color: var(--gp-text2); line-height: 1.5; }
+
+/* ─── 轮到我顶栏闪烁 ─── */
+.gp-topbar--flash { animation: gpFlash 1s ease-in-out 4; border-color: var(--gp-gold); }
+@keyframes gpFlash { 0%, 100% { box-shadow: none; } 50% { box-shadow: 0 0 18px rgba(244, 207, 135, 0.5); } }
+
+/* ─── 标记按钮 ─── */
+.mini-player__markbtn { margin-left: auto; flex: none; width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--gp-border); background: rgba(255, 255, 255, 0.03); color: var(--gp-text3); cursor: pointer; font-size: 13px; }
+.mini-player__markbtn--suspect { color: var(--gp-danger); border-color: rgba(255, 107, 107, 0.4); }
+.mini-player__markbtn--trust { color: var(--gp-success); border-color: rgba(88, 215, 134, 0.4); }
