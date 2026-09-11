@@ -14,6 +14,7 @@ data/
 *.db
 *.db-journal
 .pytest_cache/
+_backend.*.log
 
 # ─── 前端 ───
 node_modules/
