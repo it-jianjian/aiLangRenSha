@@ -25,6 +25,7 @@ import PlayerTable from '../components/game/PlayerTable'
 import TimelinePanel from '../components/game/TimelinePanel'
 import CurrentSpeechPanel from '../components/game/CurrentSpeechPanel'
 import EventLogPanel from '../components/game/EventLogPanel'
+import BackButton from '../components/BackButton'
 import './GamePage.css'
 
 // 事件日志条目
@@ -651,9 +652,12 @@ export default function GamePage() {
       <div className="game-shell">
         {/* ─── 顶栏 ─── */}
         <header className={`gp-topbar ${myTurnFlash ? 'gp-topbar--flash' : ''}`}>
-          <div>
-            <div className="gp-topbar__title display">狼人杀</div>
-            <small className="muted">第 {store.currentRound || 1} 天 · {isNight ? '夜晚' : '白天'}</small>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <BackButton />
+            <div>
+              <div className="gp-topbar__title display">狼人杀</div>
+              <small className="muted">第 {store.currentRound || 1} 天 · {isNight ? '夜晚' : '白天'}</small>
+            </div>
           </div>
           <div className="gp-topbar__right">
             <span className="tag-pill">存活 {aliveCount}/{players.length}</span>

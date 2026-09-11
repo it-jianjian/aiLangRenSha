@@ -333,3 +333,76 @@ class WSMessage(BaseModel):
     type: str
     data: dict = {}
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+# ── 复盘相关（胜率曲线 + AI 点评） ────────────────────────
+
+class WinPoint(BaseModel):
+    """胜率曲线上的一个节点（上帝视角好人胜率）"""
+    step: int                             # 节点序号（0=开局）
+    round: int                            # 所属轮次（开局=0）
+    checkpoint: str                       # start/after_night/after_day/final
+    good_win_prob: float                  # 好人胜率 0~1
+    alive_wolves: int
+    alive_goods: int
+    event_label: str                      # 人类可读标签，如「昨夜 3号 遇难」
+    deaths: list[int] = []                # 该节点新死亡座位
+
+
+class TurningPoint(BaseModel):
+    """胜率转折点（|ΔP| 最大的节点，供 LLM 解读）"""
+    step: int
+    round: int
+    checkpoint: str
+    good_win_prob: float
+    delta: float                          # 相对上一节点的胜率变化
+    event_label: str
+    deaths: list[int] = []
+
+
+class ReviewMvp(BaseModel):
+    """本局 MVP"""
+    seat: int
+    role: str = ""
+    reason: str = ""
+
+
+class ReviewMoment(BaseModel):
+    """关键转折"""
+    round: Optional[int] = None
+    event: str = ""
+    impact: str = ""
+    comment: str = ""
+
+
+class ReviewPlay(BaseModel):
+    """最佳 / 最差操作"""
+    seat: Optional[int] = None
+    round: Optional[int] = None
+    action: str = ""
+    comment: str = ""
+
+
+class ReviewInsight(BaseModel):
+    """AI 复盘点评（LLM 生成的结构化产物）"""
+    summary: str = ""
+    mvp: Optional[ReviewMvp] = None
+    key_moments: list[ReviewMoment] = []
+    best_plays: list[ReviewPlay] = []
+    worst_plays: list[ReviewPlay] = []
+    camp_analysis: dict[str, str] = {}    # {"good": "...", "wolf": "..."}
+
+
+class ReviewData(BaseModel):
+    """复盘数据（GET /games/{id}/review 返回）
+
+    win_curve / turning_points 为实时规则计算，永远返回；
+    insight 为按需生成并缓存的 AI 点评，未生成/降级时为 null。
+    """
+    game_id: str
+    win_curve: list[WinPoint]
+    turning_points: list[TurningPoint] = []
+    insight: Optional[ReviewInsight] = None
+    generated: bool = False               # 是否已有缓存的 AI 点评
+    is_fallback: bool = False             # 缓存的点评是否为降级占位
+    model_name: Optional[str] = None

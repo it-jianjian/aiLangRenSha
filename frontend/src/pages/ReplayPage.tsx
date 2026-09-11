@@ -8,9 +8,11 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Button, Space, Slider, Spin, message } from 'antd'
-import { StepBackwardOutlined, StepForwardOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons'
+import { StepBackwardOutlined, StepForwardOutlined, PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined, ReloadOutlined } from '@ant-design/icons'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceDot, ResponsiveContainer } from 'recharts'
 import { apiService } from '../services/api'
-import type { ReplayData, ReplayStep, Roster } from '../types'
+import BackButton from '../components/BackButton'
+import type { ReplayData, ReplayStep, Roster, ReviewData, WinPoint } from '../types'
 import './ReplayPage.css'
 
 const roleCN: Record<string, string> = {
@@ -47,17 +49,74 @@ const phaseIcon = (phase: string) => {
   return '⚙️'
 }
 
+// 胜率曲线节点标签：开局 / R1夜 / R1日 / 终局
+const checkpointLabel = (wp: WinPoint): string => {
+  if (wp.checkpoint === 'start') return '开局'
+  if (wp.checkpoint === 'final') return '终局'
+  return `R${wp.round}${wp.checkpoint === 'after_night' ? '夜' : '日'}`
+}
+
+// 把胜率曲线节点映射到最接近的回放步骤索引（用于点击联动）
+function winPointToReplayStep(wp: WinPoint, steps: ReplayStep[]): number {
+  if (wp.checkpoint === 'start') return 0
+  if (wp.checkpoint === 'final') return Math.max(0, steps.length - 1)
+  const phase = wp.checkpoint === 'after_night' ? 'night' : 'day'
+  let last = -1
+  steps.forEach((s, i) => { if (s.round === wp.round && s.phase === phase) last = i })
+  if (last >= 0) return last
+  const r = steps.findIndex(s => s.round === wp.round)
+  return r >= 0 ? r : 0
+}
+
+// 胜率曲线自定义 Tooltip
+function CurveTooltip({ active, payload }: any) {
+  if (!active || !payload || !payload.length) return null
+  const d = payload[0].payload
+  return (
+    <div className="curve-tooltip">
+      <div className="curve-tooltip__label">{d.label}</div>
+      <div className="curve-tooltip__prob">好人胜率 {d.prob}%</div>
+      {d.event_label && <div className="curve-tooltip__meta">{d.event_label}</div>}
+      <div className="curve-tooltip__meta">🐺 {d.alive_wolves} 存活 · 👤 {d.alive_goods} 存活</div>
+      {d.deaths && d.deaths.length > 0 && <div className="curve-tooltip__meta">💀 {d.deaths.join('、')}号出局</div>}
+    </div>
+  )
+}
+
 export default function ReplayPage() {
   const { gameId } = useParams<{ gameId: string }>()
   const [loading, setLoading] = useState(true)
   const [replay, setReplay] = useState<ReplayData | null>(null)
+  const [review, setReview] = useState<ReviewData | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [playing, setPlaying] = useState(false)
+  const [generating, setGenerating] = useState(false)
 
   useEffect(() => {
     if (!gameId) return
-    apiService.getReplay(gameId).then(setReplay).catch(() => message.error('加载回放失败')).finally(() => setLoading(false))
+    Promise.all([
+      apiService.getReplay(gameId),
+      apiService.getReview(gameId).catch(() => null),
+    ])
+      .then(([rp, rv]) => { setReplay(rp); setReview(rv) })
+      .catch(() => message.error('加载回放失败'))
+      .finally(() => setLoading(false))
   }, [gameId])
+
+  const handleGenerateReview = async () => {
+    if (!gameId) return
+    setGenerating(true)
+    try {
+      const rv = await apiService.generateReview(gameId)
+      setReview(rv)
+      if (rv.is_fallback || !rv.insight) message.warning('AI 点评暂不可用，胜率曲线不受影响')
+      else message.success('复盘点评已生成')
+    } catch {
+      message.error('生成复盘失败')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   useEffect(() => {
     if (!playing || !replay) return
@@ -80,6 +139,15 @@ export default function ReplayPage() {
     return groups
   }, [replay])
 
+  const curveData = useMemo(() => {
+    if (!review) return []
+    return review.win_curve.map(wp => ({
+      ...wp,
+      label: checkpointLabel(wp),
+      prob: Math.round(wp.good_win_prob * 1000) / 10,
+    }))
+  }, [review])
+
   if (loading) return <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>
   if (!replay) return <div style={{ textAlign: 'center', padding: 100 }}><span style={{ color: 'var(--gp-text2)' }}>回放数据不可用</span></div>
 
@@ -92,6 +160,11 @@ export default function ReplayPage() {
   return (
     <div className="replay-page">
       <div className="replay-page__inner">
+        {/* ─── 返回 ─── */}
+        <div style={{ display: 'flex', marginBottom: 4 }}>
+          <BackButton />
+        </div>
+
         {/* ─── 标题 ─── */}
         <div className="replay-header">
           <h2 className="replay-header__title">对局回放</h2>
@@ -221,6 +294,121 @@ export default function ReplayPage() {
             ))}
           </div>
         </div>
+
+        {/* ─── 胜率曲线 ─── */}
+        {review && review.win_curve.length > 0 && (
+          <div className="replay-panel">
+            <div className="replay-panel__header">📈 好人胜率曲线</div>
+            <div className="replay-panel__body">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart
+                  data={curveData}
+                  margin={{ top: 10, right: 16, bottom: 4, left: -12 }}
+                  onClick={(state: any) => {
+                    if (state && state.activeTooltipIndex != null && replay) {
+                      const wp = review.win_curve[state.activeTooltipIndex]
+                      if (wp) { setCurrentStep(winPointToReplayStep(wp, replay.steps)); setPlaying(false) }
+                    }
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#8a93b0' }} interval={0} />
+                  <YAxis domain={[0, 100]} unit="%" width={46} tick={{ fontSize: 11, fill: '#8a93b0' }} />
+                  <Tooltip content={<CurveTooltip />} />
+                  <ReferenceLine y={50} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+                  <Line type="monotone" dataKey="prob" stroke="#6c8cff" strokeWidth={2} dot={{ r: 3, fill: '#6c8cff', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                  {review.turning_points.map((tp, i) => {
+                    const idx = review.win_curve.findIndex(w => w.step === tp.step)
+                    if (idx < 0 || !curveData[idx]) return null
+                    return <ReferenceDot key={i} x={curveData[idx].label} y={curveData[idx].prob} r={6} fill="#ffa502" stroke="#0a0e20" strokeWidth={1.5} />
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+              <div className="curve-legend">
+                <span className="curve-legend__item"><i className="curve-legend__dot curve-legend__dot--turn" />胜率转折点</span>
+                <span className="curve-legend__item muted">点击曲线节点可跳转到对应回放步骤</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── AI 复盘点评 ─── */}
+        {review && (
+          <div className="replay-panel">
+            <div className="replay-panel__header" style={{ justifyContent: 'space-between' }}>
+              <span>🪄 AI 复盘点评</span>
+              {review.generated && !review.is_fallback && (
+                <Button size="small" type="text" icon={<ReloadOutlined />} loading={generating} onClick={handleGenerateReview}>重新生成</Button>
+              )}
+            </div>
+            <div className="replay-panel__body">
+              {!review.generated ? (
+                <div className="review-empty">
+                  <p className="muted" style={{ marginBottom: 12 }}>基于全局事实生成 MVP、关键转折与操作点评（上帝视角，仅本局结束后可用）。</p>
+                  <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} onClick={handleGenerateReview}>生成 AI 复盘</Button>
+                </div>
+              ) : (!review.insight || review.is_fallback) ? (
+                <div className="review-empty"><p className="muted">AI 点评暂不可用（模型未配置或调用失败），胜率曲线不受影响。可稍后重试。</p></div>
+              ) : (
+                <div className="review-body">
+                  {review.insight.summary && <div className="review-summary">「{review.insight.summary}」</div>}
+                  {review.insight.mvp && (
+                    <div className="review-mvp">
+                      <span className="review-mvp__badge">🏆 MVP</span>
+                      <span className="review-mvp__seat">{review.insight.mvp.seat}号</span>
+                      <span className={`replay-role-tag ${roleTagClass(review.insight.mvp.role)}`}>{roleCN[review.insight.mvp.role] || review.insight.mvp.role}</span>
+                      <span className="review-mvp__reason">{review.insight.mvp.reason}</span>
+                    </div>
+                  )}
+                  {(review.insight.key_moments || []).length > 0 && (
+                    <div className="review-section">
+                      <div className="review-section__title">⚡ 关键转折</div>
+                      {(review.insight.key_moments || []).map((m, i) => (
+                        <div key={i} className="review-item">
+                          <div className="review-item__head">{m.round != null && <span className="review-item__tag">第{m.round}轮</span>}{m.event}</div>
+                          {m.impact && <div className="review-item__impact">影响：{m.impact}</div>}
+                          {m.comment && <div className="review-item__comment">{m.comment}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="review-cols">
+                    {(review.insight.best_plays || []).length > 0 && (
+                      <div className="review-section">
+                        <div className="review-section__title review-section__title--good">👍 最佳操作</div>
+                        {(review.insight.best_plays || []).map((p, i) => (
+                          <div key={i} className="review-item">
+                            <div className="review-item__head">{p.seat != null && <span className="review-item__tag">{p.seat}号</span>}{p.action}</div>
+                            {p.comment && <div className="review-item__comment">{p.comment}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(review.insight.worst_plays || []).length > 0 && (
+                      <div className="review-section">
+                        <div className="review-section__title review-section__title--bad">👎 失误操作</div>
+                        {(review.insight.worst_plays || []).map((p, i) => (
+                          <div key={i} className="review-item">
+                            <div className="review-item__head">{p.seat != null && <span className="review-item__tag">{p.seat}号</span>}{p.action}</div>
+                            {p.comment && <div className="review-item__comment">{p.comment}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {(review.insight.camp_analysis?.good || review.insight.camp_analysis?.wolf) && (
+                    <div className="review-section">
+                      <div className="review-section__title">⚖️ 阵营分析</div>
+                      {review.insight.camp_analysis?.good && <div className="review-camp"><b>好人：</b>{review.insight.camp_analysis.good}</div>}
+                      {review.insight.camp_analysis?.wolf && <div className="review-camp"><b>狼人：</b>{review.insight.camp_analysis.wolf}</div>}
+                    </div>
+                  )}
+                  {review.model_name && <div className="review-model muted">生成模型：{review.model_name}</div>}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

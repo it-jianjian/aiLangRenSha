@@ -123,11 +123,13 @@ def create_app() -> FastAPI:
     # ─── 注册 API 路由 ──────────────────────────────────────
     from app.api.game_router import router as game_router
     from app.api.replay_router import router as replay_router
+    from app.api.review_router import router as review_router
     from app.api.model_router import router as model_router
     from app.api.auth_router import router as auth_router
 
     app.include_router(game_router, prefix="/api/v1/games", tags=["对局"])
     app.include_router(replay_router, prefix="/api/v1/games", tags=["回放"])
+    app.include_router(review_router, prefix="/api/v1/games", tags=["复盘"])
     app.include_router(model_router, prefix="/api/v1/models", tags=["模型池"])
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["账号"])
 

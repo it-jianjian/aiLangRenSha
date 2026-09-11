@@ -509,3 +509,52 @@ def build_revise_messages(
     )
     messages.append(HumanMessage(content=revise_text))
     return messages
+
+
+# ================================================================
+# 复盘点评（AI Review）Prompt
+# ================================================================
+
+def build_review_prompt(
+    game_summary: str,
+    turning_points_text: str,
+) -> list[BaseMessage]:
+    """构建「复盘点评」Prompt（上帝视角，走大模型）。
+
+    复盘在对局结束后进行，可揭示全部身份（与 replay 一致），但素材绝不包含
+    狼队协商（werewolf_negotiation）原始内容。LLM 只负责解读事实，不计算胜率数值
+    （胜率由规则引擎计算）。要求只输出固定结构 JSON。
+
+    参数:
+        game_summary: 已组装的上帝视角对局事实摘要（身份/事件/投票/发言）
+        turning_points_text: 系统计算的胜率转折点描述
+
+    返回: [SystemMessage, HumanMessage]
+    """
+    system_text = (
+        "你是狼人杀复盘分析师，拥有本局上帝视角（可见所有玩家真实身份）。"
+        "你的任务是基于给定的对局事实与胜率转折点，产出客观、具体、可复盘的点评。\n\n"
+        "硬性要求：\n"
+        "- 只能依据提供的事实，禁止编造未出现的发言、查验、投票或死亡；\n"
+        "- 胜率数值由系统计算，你不需要也不允许自行给出胜率百分比；\n"
+        "- 聚焦「为什么」：解释关键转折为何改变局势，点评操作好坏而非复述流程；\n"
+        "- 用简体中文，简洁专业，每条 comment/reason 不超过 60 字。\n\n"
+        "只输出如下 JSON，不要任何额外文字或 markdown：\n"
+        '{"summary": "一句话总评本局走势", '
+        '"mvp": {"seat": 座位号(int), "role": "身份", "reason": "当选理由"}, '
+        '"key_moments": [{"round": 轮次(int), "event": "发生了什么", "impact": "对局势的影响", "comment": "点评"}], '
+        '"best_plays": [{"seat": 座位号(int), "round": 轮次(int), "action": "操作", "comment": "为何是好操作"}], '
+        '"worst_plays": [{"seat": 座位号(int), "round": 轮次(int), "action": "操作", "comment": "为何是失误"}], '
+        '"camp_analysis": {"good": "好人阵营整体表现", "wolf": "狼人阵营整体表现"}}'
+    )
+
+    human_text = (
+        f"【对局事实（上帝视角）】\n{game_summary}\n\n"
+        f"【系统计算的胜率转折点】\n{turning_points_text or '（无明显转折点）'}\n\n"
+        "请输出复盘点评 JSON。"
+    )
+
+    return [
+        SystemMessage(content=system_text),
+        HumanMessage(content=human_text),
+    ]

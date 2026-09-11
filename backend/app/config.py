@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     speech_critique_enabled: bool = False   # 总开关，默认关闭
     speech_critique_scope: str = "speech"   # 生效范围（逗号分隔 action_type）；先只开普通发言，不含 last_words/pk
 
+    # ─── 复盘点评（AI Review） ───────────────────────────────
+    # 关闭时 POST /review/generate 直接返回降级占位，不调用 LLM；
+    # 胜率曲线为纯规则计算，不受此开关影响，永远可用。
+    review_llm_enabled: bool = True
+
     # ─── 多实例 LLM 配置（每个座位独立模型） ────────────────────
     # 座位1~12 各自的模型和温度（共用同一个 API Key + Base URL）
     llm_inst_1_model: str = ""

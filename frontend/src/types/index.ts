@@ -103,6 +103,51 @@ export interface ReplayData {
   end_reason: string
 }
 
+// ─── 复盘相关（胜率曲线 + AI 点评） ──────────────────────
+export interface WinPoint {
+  step: number
+  round: number
+  checkpoint: 'start' | 'after_night' | 'after_day' | 'final'
+  good_win_prob: number            // 好人胜率 0~1
+  alive_wolves: number
+  alive_goods: number
+  event_label: string
+  deaths: number[]
+}
+
+export interface TurningPoint {
+  step: number
+  round: number
+  checkpoint: string
+  good_win_prob: number
+  delta: number                    // 相对上一节点的胜率变化
+  event_label: string
+  deaths: number[]
+}
+
+export interface ReviewMvp { seat: number; role: string; reason: string }
+export interface ReviewMoment { round?: number | null; event: string; impact: string; comment: string }
+export interface ReviewPlay { seat?: number | null; round?: number | null; action: string; comment: string }
+
+export interface ReviewInsight {
+  summary: string
+  mvp?: ReviewMvp | null
+  key_moments: ReviewMoment[]
+  best_plays: ReviewPlay[]
+  worst_plays: ReviewPlay[]
+  camp_analysis: Record<string, string>
+}
+
+export interface ReviewData {
+  game_id: string
+  win_curve: WinPoint[]
+  turning_points: TurningPoint[]
+  insight?: ReviewInsight | null
+  generated: boolean
+  is_fallback: boolean
+  model_name?: string | null
+}
+
 // ─── WebSocket 消息 ───────────────────────────────────────
 export interface WSMessage {
   event_id?: string

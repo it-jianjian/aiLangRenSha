@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button, Input, Statistic, Row, Col, Tag, message } from 'antd'
 import { apiService } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
+import BackButton from '../components/BackButton'
 
 export default function ProfilePage() {
   const navigate = useNavigate()
@@ -51,6 +52,9 @@ export default function ProfilePage() {
 
   return (
     <div className="app-shell" style={{ maxWidth: 860 }}>
+      <div style={{ display: 'flex', marginBottom: 8 }}>
+        <BackButton />
+      </div>
       <div className="panel" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <span className="avatar-ring" style={{ width: 52, height: 52, fontSize: 22 }}>{user?.avatar || (user?.nickname || '游')[0]}</span>

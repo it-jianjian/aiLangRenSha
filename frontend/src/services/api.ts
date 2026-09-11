@@ -12,6 +12,7 @@ import type {
   GameSummary,
   GameDetail,
   ReplayData,
+  ReviewData,
   GameCreated,
   Roster,
   RosterValidation,
@@ -188,6 +189,18 @@ export const apiService = {
   /** 获取回放数据 */
   async getReplay(gameId: string): Promise<ReplayData> {
     const res = await client.get(`/games/${gameId}/replay`)
+    return unwrap(res)
+  },
+
+  /** 获取复盘数据（胜率曲线实时计算 + 已缓存 AI 点评） */
+  async getReview(gameId: string): Promise<ReviewData> {
+    const res = await client.get(`/games/${gameId}/review`)
+    return unwrap(res)
+  },
+
+  /** 生成 / 重新生成 AI 复盘点评 */
+  async generateReview(gameId: string): Promise<ReviewData> {
+    const res = await client.post(`/games/${gameId}/review/generate`)
     return unwrap(res)
   },
 }

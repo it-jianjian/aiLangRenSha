@@ -365,10 +365,102 @@
 .replay-page .ant-tag { border: none !important; }
 .replay-page .ant-card { background: transparent !important; border-color: transparent !important; }
 
+/* ─── 胜率曲线 ─── */
+.curve-tooltip {
+  background: rgba(10, 14, 32, 0.95);
+  border: 1px solid var(--gp-border-light);
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: var(--gp-shadow);
+  font-size: 12px;
+  min-width: 150px;
+}
+.curve-tooltip__label { font-weight: 700; color: var(--gp-text); margin-bottom: 4px; }
+.curve-tooltip__prob { color: var(--gp-accent); font-weight: 600; margin-bottom: 4px; }
+.curve-tooltip__meta { color: var(--gp-text2); line-height: 1.6; }
+
+.curve-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--gp-text2);
+  flex-wrap: wrap;
+}
+.curve-legend__item { display: flex; align-items: center; gap: 6px; }
+.curve-legend__dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--gp-accent); }
+.curve-legend__dot--turn { background: #ffa502; }
+
+/* ─── AI 复盘点评 ─── */
+.review-empty { text-align: center; padding: 20px 12px; }
+.review-body { display: flex; flex-direction: column; gap: 14px; }
+
+.review-summary {
+  font-size: 14px;
+  color: var(--gp-text);
+  font-style: italic;
+  padding: 10px 14px;
+  background: var(--gp-accent-soft);
+  border-left: 3px solid var(--gp-accent);
+  border-radius: 6px;
+  line-height: 1.6;
+}
+
+.review-mvp {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: rgba(255, 165, 2, 0.06);
+  border: 1px solid rgba(255, 165, 2, 0.2);
+  border-radius: 8px;
+}
+.review-mvp__badge { font-weight: 700; color: #ffa502; font-size: 13px; }
+.review-mvp__seat { font-weight: 700; color: var(--gp-text); font-size: 15px; }
+.review-mvp__reason { color: var(--gp-text2); font-size: 13px; flex: 1; min-width: 120px; }
+
+.review-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+.review-section { display: flex; flex-direction: column; gap: 8px; }
+.review-section__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gp-text);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--gp-border);
+}
+.review-section__title--good { color: var(--gp-success); }
+.review-section__title--bad { color: var(--gp-danger); }
+
+.review-item {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.review-item__head { color: var(--gp-text); font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.review-item__tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--gp-slate-soft);
+  color: var(--gp-slate);
+  font-weight: 600;
+}
+.review-item__impact { color: var(--gp-text2); font-size: 12px; margin-top: 4px; }
+.review-item__comment { color: var(--gp-text3); font-size: 12px; margin-top: 3px; line-height: 1.5; }
+
+.review-camp { font-size: 13px; color: var(--gp-text2); line-height: 1.6; }
+.review-camp b { color: var(--gp-text); }
+.review-model { font-size: 11px; text-align: right; }
+
 /* ─── 响应式 ─── */
 @media (max-width: 768px) {
   .replay-page__inner { padding: 16px 12px 32px; }
   .replay-header__icon { font-size: 32px; }
   .replay-header__title { font-size: 22px; }
   .replay-controls__buttons { gap: 10px; }
+  .review-cols { grid-template-columns: 1fr; }
 }

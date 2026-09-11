@@ -382,6 +382,27 @@ class AgentStep(Base):
     )
 
 
+class GameReview(Base):
+    """对局复盘表 — 缓存 AI 复盘点评结果（按需生成）
+
+    一局对局至多一条复盘记录（game_id 唯一）。胜率曲线为实时规则计算不入表，
+    此表只缓存 LLM 生成的点评 JSON，避免重复消耗 token；
+    is_fallback=True 表示 LLM 不可用/解析失败时的降级占位。
+    """
+    __tablename__ = "game_reviews"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    game_id = Column(String(36), ForeignKey("games.id"), nullable=False, unique=True, comment="所属对局（唯一）")
+    review_json = Column(Text, nullable=False, comment="AI 复盘点评结构化 JSON")
+    model_name = Column(String(64), nullable=True, comment="生成所用模型名")
+    prompt_tokens = Column(Integer, nullable=True, comment="LLM 请求 prompt token 数")
+    completion_tokens = Column(Integer, nullable=True, comment="LLM 请求 completion token 数")
+    is_fallback = Column(Boolean, nullable=False, default=False, comment="是否降级（LLM 不可用/解析失败）")
+    generated_at = Column(DateTime, nullable=False, server_default=func.now(), comment="生成时间")
+
+    game = relationship("Game")
+
+
 class CustomModel(Base):
     """用户自定义模型池 — 前端可自行添加模型名/API Key/Base URL，免改服务器配置重启。"""
     __tablename__ = "custom_models"

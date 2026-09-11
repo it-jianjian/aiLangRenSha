@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button, Input, Tabs, message } from 'antd'
 import { apiService } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
+import BackButton from '../components/BackButton'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -39,6 +40,9 @@ export default function LoginPage() {
   return (
     <div className="auth-page">
       <div className="auth-card panel">
+        <div style={{ display: 'flex' }}>
+          <BackButton label="返回大厅" />
+        </div>
         <h2 className="display" style={{ textAlign: 'center', margin: '4px 0 12px' }}>狼人杀 · 账号</h2>
         <Tabs
           activeKey={tab}
