@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # ─── 可选登录 ────────────────────────────────────────
+    auth_secret: str = "dev-secret-change-me"   # token 签名密钥，生产请改
+
     # ─── 属性方法 ────────────────────────────────────────────
 
     @property

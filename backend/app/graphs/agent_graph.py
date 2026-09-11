@@ -233,7 +233,10 @@ def run_agent(state: AgentState) -> dict[str, Any]:
     )
 
     # ─── Step 3: LLMCall — 调用模型（按决策类型路由到不同模型，阶段 3） ───
-    llm: BaseChatModel = state.get("llm") or create_llm(seat_number=seat, action_type=action_type)
+    llm: BaseChatModel = state.get("llm") or create_llm(
+        seat_number=seat, action_type=action_type,
+        game_id=(state.get("game_context") or {}).get("game_id"),
+    )
     is_fallback = False
 
     # 如果是 MockWerewolfLLM，动态设置 decision_type

@@ -164,7 +164,7 @@ async def critique_and_revise(
             extract_own_history(filtered, seat),
             filtered.get("werewolf_companions"),
         )
-        cllm = create_llm(seat_number=seat, action_type="critique")
+        cllm = create_llm(seat_number=seat, action_type="critique", game_id=game_state.get("game_id"))
         cresp = await cllm.ainvoke(cmsgs)
         craw = cresp.content if hasattr(cresp, "content") else str(cresp)
         review = parse_critique(craw)
@@ -184,7 +184,7 @@ async def critique_and_revise(
     # ─── revise：大模型（本我），单次，修订稿不再过 critique（FR-3）───
     try:
         rmsgs = build_revise_messages(role, seat, filtered, draft, review)
-        rllm = create_llm(seat_number=seat, action_type="speech")
+        rllm = create_llm(seat_number=seat, action_type="speech", game_id=game_state.get("game_id"))
         rresp = await rllm.ainvoke(rmsgs)
         rraw = rresp.content if hasattr(rresp, "content") else str(rresp)
         revised_text = _clean_text(rraw)

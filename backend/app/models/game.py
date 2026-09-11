@@ -18,6 +18,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -142,6 +143,7 @@ class Game(Base):
     roster_json = Column(Text, nullable=False, default='{"werewolf":2,"villager":2,"seer":1,"witch":1,"hunter":0,"guard":0}')
     roster_locked_at = Column(DateTime, nullable=True)
     owner_token_hash = Column(String(128), nullable=True)
+    owner_user_id = Column(String(36), nullable=True, comment="创建者用户ID（可选登录）")
     created_at = Column(DateTime, nullable=False, server_default=func.now(), comment="创建时间")
     started_at = Column(DateTime, nullable=True, comment="开始时间")
     finished_at = Column(DateTime, nullable=True, comment="结束时间")
@@ -187,6 +189,7 @@ class GamePlayer(Base):
     death_reason = Column(String(32), nullable=True, comment="死因: killed_by_werewolf/poisoned/voted_out")
     ai_persona = Column(String(64), nullable=True, comment="AI 人设标识，如'冷静分析师'，影响 Prompt 风格")
     access_token_hash = Column(String(128), nullable=True, comment="人类玩家一次性访问凭据摘要")
+    user_id = Column(String(36), nullable=True, comment="该座位绑定的用户ID（可选登录，人类席）")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -377,3 +380,29 @@ class AgentStep(Base):
     __table_args__ = (
         Index("idx_agent_steps_game_log", "game_id", "agent_log_id"),
     )
+
+
+class CustomModel(Base):
+    """用户自定义模型池 — 前端可自行添加模型名/API Key/Base URL，免改服务器配置重启。"""
+    __tablename__ = "custom_models"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    name = Column(String(128), nullable=False, unique=True, comment="模型名（唯一，供下拉选择）")
+    api_key = Column(String(512), nullable=False, comment="该模型的 API Key")
+    base_url = Column(String(256), nullable=False, comment="OpenAI-compatible Base URL")
+    temperature = Column(Float, nullable=True, comment="可选温度，缺省用全局")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class User(Base):
+    """用户账号（可选登录）— 注册/登录/个人资料/我的对局/战绩。"""
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    username = Column(String(64), nullable=False, unique=True, comment="登录名（唯一）")
+    password_hash = Column(String(256), nullable=False, comment="pbkdf2 哈希")
+    nickname = Column(String(64), nullable=True, comment="昵称")
+    avatar = Column(String(16), nullable=True, comment="头像（emoji 或单字）")
+    bio = Column(String(256), nullable=True, comment="个人简介")
+    email = Column(String(128), nullable=True, comment="邮箱（可选）")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())

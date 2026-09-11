@@ -218,6 +218,10 @@ async def _load_initial_state(game_id: str) -> dict[str, Any]:
         )
         game = result.scalar_one()
 
+        # 载入按座位模型覆盖（前端弹窗配置，持久化于 config_json）
+        from app.services import seat_models as _seat_models
+        _seat_models.load_from_config_json(game_id, game.config_json)
+
         # 加载所有玩家
         players_result = await session.execute(
             select(GamePlayer)

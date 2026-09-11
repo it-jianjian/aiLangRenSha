@@ -115,7 +115,7 @@ async def agent_node(state: ReActState) -> dict:
     action_type = state["action_type"]
 
     # 阶段 3 路由：决策类走小模型
-    llm = create_llm(seat_number=seat, action_type=action_type)
+    llm = create_llm(seat_number=seat, action_type=action_type, game_id=state.get("game_id"))
     llm_with_tools = llm.bind_tools(REACT_TOOLS)
 
     messages = list(state["messages"])
@@ -334,7 +334,7 @@ async def run_react_agent(
         # 协商兜底路径同样带上同伴亮牌理由，避免降级后语义割裂
         if extra_briefing:
             msgs = list(msgs) + [HumanMessage(content=extra_briefing)]
-        llm = create_llm(seat_number=seat_number, action_type=action_type)
+        llm = create_llm(seat_number=seat_number, action_type=action_type, game_id=game_id)
         try:
             resp = await llm.ainvoke(msgs)
             text = resp.content if hasattr(resp, "content") else str(resp)

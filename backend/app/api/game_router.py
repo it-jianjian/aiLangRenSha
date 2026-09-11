@@ -21,6 +21,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -52,6 +53,7 @@ router = APIRouter()
 async def create_game(
     request: CreateGameRequest,                         # Pydantic 自动验证请求体
     db: AsyncSession = Depends(get_db),                 # Depends 注入数据库会话
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """创建对局
 
@@ -68,6 +70,18 @@ async def create_game(
         raise HTTPException(status_code=400, detail="混合模式需要提供 player_name")
 
     game, owner_token, player_token = await service.create_game(request)
+
+    # 可选登录：关联创建者 / 人类座位到用户账号（支撑我的对局/战绩）
+    from app.services import auth_service
+    uid = auth_service.verify_token((authorization or "").removeprefix("Bearer ").strip() or None)
+    if uid:
+        game.owner_user_id = uid
+        if game.human_player_id:
+            from app.models.game import GamePlayer as _GP
+            hp = (await db.execute(select(_GP).where(_GP.id == game.human_player_id))).scalar_one_or_none()
+            if hp:
+                hp.user_id = uid
+
     roster = json.loads(game.roster_json)
     return ApiResponse(data={"game_id": game.id, "mode": game.mode, "status": game.status,
                               "owner_token": owner_token, "player_count": game.player_count,
@@ -243,6 +257,111 @@ async def reset_official_roster(game_id: str, owner_token: str = Header(..., ali
     game = await service.get_game_or_404(game_id)
     roster = await service.reset_official_roster(game, owner_token)
     return ApiResponse(data={"player_count": game.player_count, "roster": roster, "validation": {"valid": True, "errors": []}})
+
+
+# ─── 按座位模型配置（仅房主且仅 waiting）──────────────────
+class SeatModelsRequest(BaseModel):
+    seat_models: dict[str, str] = {}
+
+
+class MyModelRequest(BaseModel):
+    model: str = ""
+
+
+@router.get("/{game_id}/models", response_model=ApiResponse)
+async def get_seat_models(game_id: str, db: AsyncSession = Depends(get_db)):
+    """返回可选模型列表 + 当前各座位模型覆盖。"""
+    from app.config import get_settings
+    from app.services import model_pool, seat_models as sm
+
+    service = GameService(db)
+    game = await service.get_game_or_404(game_id)
+    settings = get_settings()
+    available: list[str] = []
+    candidates = [settings.llm_model_name] + [
+        getattr(settings, f"llm_inst_{i}_model", "") for i in range(1, 13)
+    ] + [settings.llm_action_simple_model, settings.llm_action_speech_model] + list(model_pool.get_pool().keys())
+    for m in candidates:
+        if m and m not in available:
+            available.append(m)
+    current = sm.get_seat_models(game_id)
+    if not current:
+        sm.load_from_config_json(game_id, game.config_json)
+        current = sm.get_seat_models(game_id)
+    return ApiResponse(data={
+        "available": available,
+        "player_count": game.player_count,
+        "seat_models": {str(k): v for k, v in current.items()},
+    })
+
+
+@router.put("/{game_id}/models", response_model=ApiResponse)
+async def set_seat_models(
+    game_id: str,
+    request: SeatModelsRequest,
+    owner_token: str = Header(..., alias="X-Owner-Token"),
+    db: AsyncSession = Depends(get_db),
+):
+    """房主在 waiting 阶段为各座位指定模型；持久化到 config_json 并写入运行时注册表。"""
+    from app.services import seat_models as sm
+
+    service = GameService(db)
+    game = await service.get_game_or_404(game_id)
+    service._assert_owner(game, owner_token)
+    if game.status != GameStatus.WAITING:
+        raise HTTPException(status_code=409, detail="对局已开始，模型配置已锁定")
+    seat_models = {
+        int(k): v for k, v in (request.seat_models or {}).items()
+        if v and str(k).isdigit() and 1 <= int(k) <= game.player_count
+    }
+    sm.set_seat_models(game_id, seat_models)
+    try:
+        cfg = json.loads(game.config_json) if game.config_json else {}
+    except (json.JSONDecodeError, TypeError):
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["seat_models"] = {str(k): v for k, v in seat_models.items()}
+    game.config_json = json.dumps(cfg, ensure_ascii=False)
+    await db.commit()
+    return ApiResponse(data={"seat_models": {str(k): v for k, v in seat_models.items()}})
+
+
+@router.put("/{game_id}/my_model", response_model=ApiResponse)
+async def set_my_model(
+    game_id: str,
+    request: MyModelRequest,
+    db: AsyncSession = Depends(get_db),
+    player_token: str = Header(..., alias="X-Player-Token"),
+):
+    """玩家为自己所在座位指定模型（仅 waiting）。model 为空表示清除覆盖。"""
+    from app.services import seat_models as sm
+
+    human_player = await _verify_human_player(game_id, player_token, db)
+    service = GameService(db)
+    game = await service.get_game_or_404(game_id)
+    if game.status != GameStatus.WAITING:
+        raise HTTPException(status_code=409, detail="对局已开始，模型已锁定")
+    seat = human_player.seat_number
+    cur = sm.get_seat_models(game_id)
+    if not cur:
+        sm.load_from_config_json(game_id, game.config_json)
+        cur = sm.get_seat_models(game_id)
+    if request.model:
+        cur[seat] = request.model
+    else:
+        cur.pop(seat, None)
+    sm.set_seat_models(game_id, cur)
+    try:
+        cfg = json.loads(game.config_json) if game.config_json else {}
+    except (json.JSONDecodeError, TypeError):
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["seat_models"] = {str(k): v for k, v in cur.items()}
+    game.config_json = json.dumps(cfg, ensure_ascii=False)
+    await db.commit()
+    return ApiResponse(data={"seat": seat, "model": request.model or None})
 
 
 # ─── 开始对局 ─────────────────────────────────────────────

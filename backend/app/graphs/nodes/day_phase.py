@@ -69,6 +69,13 @@ async def day_start_node(state: GameFlowState) -> dict:
     """
     night_deaths = state["night_deaths"]
 
+    # 广播阶段切换（白天）：前端据此把 currentPhase 置 day，
+    # 否则 currentPhase 会停留在 night，导致白天仍显示“夜晚”。
+    await record_event(
+        state["game_id"], state["current_round"], "day", "phase_change",
+        event_data={"phase": "day", "round": state["current_round"]},
+    )
+
     # ─── 持久化死亡信息到 GamePlayer 表 ───
     from sqlalchemy import select
 
@@ -93,7 +100,10 @@ async def day_start_node(state: GameFlowState) -> dict:
     if night_deaths:
         death_info = []
         for seat in night_deaths:
-            p = next(pl for pl in state["players"] if pl["seat_number"] == seat)
+            p = next((pl for pl in state["players"] if pl["seat_number"] == seat), None)
+            if p is None:
+                logger.warning(f"[Day] night_deaths 含未知座位 {seat!r}，跳过公布")
+                continue
             death_info.append({"seat": seat, "name": p["player_name"]})
         await record_event(
             state["game_id"], state["current_round"], "day", "death_announce",

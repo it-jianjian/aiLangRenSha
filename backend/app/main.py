@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
     from app.db.migrations import upgrade_database
     await asyncio.to_thread(upgrade_database, settings.database_url)
 
+    # 载入用户自定义模型池（存库免重启）
+    from app.services import model_pool
+    await model_pool.load_from_db()
+
     # R1: 尝试恢复进行中的对局（有检查点则续跑，无检查点则终止）
     from sqlalchemy import select
 
@@ -119,9 +123,13 @@ def create_app() -> FastAPI:
     # ─── 注册 API 路由 ──────────────────────────────────────
     from app.api.game_router import router as game_router
     from app.api.replay_router import router as replay_router
+    from app.api.model_router import router as model_router
+    from app.api.auth_router import router as auth_router
 
     app.include_router(game_router, prefix="/api/v1/games", tags=["对局"])
     app.include_router(replay_router, prefix="/api/v1/games", tags=["回放"])
+    app.include_router(model_router, prefix="/api/v1/models", tags=["模型池"])
+    app.include_router(auth_router, prefix="/api/v1/auth", tags=["账号"])
 
     # ─── WebSocket 端点 ──────────────────────────────────────
     from app.api.ws_handler import ws_manager

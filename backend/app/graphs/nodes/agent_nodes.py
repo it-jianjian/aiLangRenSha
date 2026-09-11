@@ -85,7 +85,7 @@ async def call_agent_stream(
     filtered = filter_context(game_state, seat, role, action_type)
     messages = build_agent_prompt(role=role, seat_number=seat, action_type=action_type, game_context=filtered)
 
-    llm_instance = llm or create_llm(seat_number=seat, action_type=action_type)
+    llm_instance = llm or create_llm(seat_number=seat, action_type=action_type, game_id=game_state.get("game_id"))
 
     # Mock 不走流式
     if isinstance(llm_instance, MockWerewolfLLM):

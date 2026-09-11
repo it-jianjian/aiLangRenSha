@@ -44,6 +44,7 @@ def create_llm(
     model_name: Optional[str] = None,
     temperature: Optional[float] = None,
     action_type: Optional[str] = None,
+    game_id: Optional[str] = None,
 ) -> BaseChatModel:
     """从配置创建 LangChain ChatModel 实例
 
@@ -71,6 +72,16 @@ def create_llm(
     final_model = model_name
     final_temp = temperature
 
+    # 按局按座位的模型覆盖（前端弹窗配置），优先级高于 action_type 路由
+    if not final_model and game_id and seat_number is not None:
+        from app.services.seat_models import get_seat_model
+
+        final_model = get_seat_model(game_id, seat_number)
+        if final_model and final_temp is None:
+            inst = settings.get_llm_instance(seat_number)
+            if inst:
+                final_temp = inst.temperature
+
     # 阶段 3: 按 action_type 路由（优先级 2，仅在无显式 model_name 时生效）
     if not final_model and action_type:
         if action_type in SIMPLE_ACTION_TYPES and settings.llm_action_simple_model:
@@ -89,6 +100,18 @@ def create_llm(
     if final_temp is None:
         final_temp = settings.llm_temperature
 
+    # 自定义模型池 provider 覆盖（用户自加 Key/地址）
+    from app.services.model_pool import get_provider
+
+    provider = get_provider(final_model)
+    if provider:
+        api_key = provider["api_key"]
+        base_url = provider["base_url"]
+        if provider.get("temperature") is not None and temperature is None:
+            final_temp = provider["temperature"]
+    else:
+        base_url = settings.llm_base_url
+
     # L3: 按 action_type 分级超时
     if action_type in SIMPLE_ACTION_TYPES:
         final_timeout = settings.llm_timeout_simple or settings.llm_timeout
@@ -104,13 +127,13 @@ def create_llm(
 
     from langchain_openai import ChatOpenAI
 
-    cache_key = (final_model, final_temp, final_timeout)
+    cache_key = (final_model, base_url, final_temp, final_timeout)
     if cache_key in _llm_cache:
         return _llm_cache[cache_key]
 
     llm_instance = ChatOpenAI(
         model=final_model,
-        base_url=settings.llm_base_url,
+        base_url=base_url,
         api_key=api_key,
         temperature=final_temp if final_temp is not None else settings.llm_temperature,
         timeout=final_timeout,

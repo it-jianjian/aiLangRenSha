@@ -343,7 +343,7 @@ async def _do_werewolf_legacy(state, alive_werewolves, alive_non_werewolf_seats,
                 target = call_agent_werewolf_kill(state, sole_wolf)
             agreement = "human_sole_werewolf"
         else:
-            target = await call_agent_async(state, sole_wolf, "kill")
+            target = _sanitize_kill_target(state, await call_agent_async(state, sole_wolf, "kill"))
             agreement = "single_ai_werewolf"
     else:
         # 双狼并行收集
@@ -548,9 +548,26 @@ async def _human_wolf_choice(state, wolf, targets, extra=None):
     return (wolf["seat_number"], action.get("target_seat"))
 
 
+def _legal_kill_targets(state) -> list[int]:
+    """存活且非狼的可选击杀座位"""
+    return [p["seat_number"] for p in get_alive_players(state["players"]) if p["role"] != PlayerRole.WEREWOLF]
+
+
+def _sanitize_kill_target(state, target):
+    """校验 AI 击杀目标；非法（LLM 回吐文本/越界/狼同伴）时取首个合法目标兜底。
+
+    ReAct 决策路径不做 validate_decision，LLM 可能把工具返回的说明文本当作 decision，
+    必须在此收敛为合法座位号，否则 night_settle/day_start 会因非法座位崩溃。
+    """
+    legal = _legal_kill_targets(state)
+    if isinstance(target, int) and not isinstance(target, bool) and target in legal:
+        return target
+    return legal[0] if legal else None
+
+
 async def _ai_wolf_choice(state, wolf):
     """AI 狼人提交击杀目标"""
-    target = await call_agent_async(state, wolf, "kill")
+    target = _sanitize_kill_target(state, await call_agent_async(state, wolf, "kill"))
     return (wolf["seat_number"], target)
 
 
@@ -790,8 +807,11 @@ async def night_settle_node(state: GameFlowState) -> dict:
     death_causes = resolve_night_deaths(
         state["night_kill_target"], state["night_witch_action"], state["night_witch_target"], state.get("night_guard_target"),
     )
-    night_deaths = sorted(death_causes)
     players = state["players"]
+    # 防御：只保留 players 中真实存在的座位，避免非法死亡座位导致后续节点崩溃
+    valid_seats = {p["seat_number"] for p in players}
+    death_causes = {s: r for s, r in death_causes.items() if s in valid_seats}
+    night_deaths = sorted(death_causes)
 
     kill_target = state["night_kill_target"]
 
